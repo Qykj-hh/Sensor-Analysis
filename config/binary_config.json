@@ -1,0 +1,59 @@
+{
+  "_说明": "二分类模型训练配置 - v6 修复硬样本挖掘策略",
+  
+  "seed": 42,
+  "test_size": 0.15,
+  "data_dir": "dataset",
+  "output_dir": "artifacts/binary",
+  
+  "binary_params": {
+    "_说明": "激进参数 + 轻度正则化",
+    "n_estimators": 3000,
+    "learning_rate": 0.005,
+    "num_leaves": 127,
+    "max_depth": 10,
+    "min_data_in_leaf": 50,
+    "min_split_gain": 0.01,
+    "min_child_weight": 1e-5,
+    "reg_alpha": 0.01,
+    "reg_lambda": 0.01,
+    "subsample": 0.85,
+    "colsample_bytree": 0.85,
+    "subsample_freq": 1,
+    "is_unbalance": false,
+    "scale_pos_weight": 1.0,
+    "path_smooth": 0.0,
+    "boosting_type": "goss",
+    "top_rate": 0.2,
+    "other_rate": 0.1,
+    "enable_bundle": true
+  },
+  
+  "training": {
+    "_说明": "v6 修复硬样本挖掘策略，降低正常类权重避免过度偏向",
+    "balance_strategy": "undersample_1to1",
+    "smote_ratio": 1.0,
+    "use_focal_loss": false,
+    "focal_gamma": 2.0,
+    "use_feature_interactions": true,
+    "use_fft_features": true,
+    "use_ensemble": true,
+    "ensemble_models": 5,
+    "normal_class_weight": 2.0,
+    "_normal_class_weight说明": "降低到2.0，避免过度偏向正常类",
+    "use_hard_mining": true,
+    "hard_mining_rounds": 3,
+    "hard_margin": 0.3,
+    "target_dual_accuracy": 0.90
+  },
+  
+  "sampling": {
+    "_说明": "内存优化采样配置",
+    "mode": "window",
+    "window_sec": 120.0,
+    "step_sec": 90.0,
+    "max_windows_per_file": 20,
+    "min_points": 10,
+    "num_workers": 12
+  }
+}

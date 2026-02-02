@@ -1,0 +1,44 @@
+{
+  "_说明": "多分类模型训练配置 v3 - 极限优化版（目标: 75%准确率）",
+  
+  "seed": 42,
+  "test_size": 0.15,
+  "data_dir": "dataset/Abnormal",
+  "output_dir": "artifacts/multiclass",
+  
+  "multiclass_params": {
+    "_说明": "极限优化参数",
+    "device": "gpu",
+    "boosting_type": "goss",
+    "n_estimators": 15000,
+    "learning_rate": 0.02,
+    "num_leaves": 255,
+    "max_depth": 15,
+    "subsample": 0.85,
+    "colsample_bytree": 0.85,
+    "min_data_in_leaf": 50,
+    "min_split_gain": 0.01,
+    "reg_alpha": 0.0001,
+    "reg_lambda": 0.0001,
+    "class_weight": "balanced",
+    "path_smooth": 0.05,
+    "extra_trees": true,
+    "_extra_trees说明": "使用极端随机树提升泛化",
+    "top_rate": 0.2,
+    "other_rate": 0.1,
+    "enable_bundle": true
+  },
+  
+  
+  "sampling": {
+    "_说明": "内存优化采样配置",
+    "mode": "window",
+    "window_sec": 600.0,
+    "_window_sec说明": "窗口长度10分钟",
+    "step_sec": 180.0,
+    "_step_sec说明": "步长3分钟，平衡样本量与内存",
+    "max_windows_per_file": 15,
+    "min_points": 15,
+    "num_workers": 12
+  }
+}

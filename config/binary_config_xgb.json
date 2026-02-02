@@ -1,0 +1,40 @@
+{
+  "_说明": "XGBoost二分类模型训练配置",
+  
+  "seed": 42,
+  "test_size": 0.15,
+  "data_dir": "dataset",
+  "output_dir": "artifacts/xgboost/binary",
+  
+  "binary_params": {
+    "_说明": "XGBoost二分类参数",
+    "objective": "binary:logistic",
+    "n_estimators": 1000,
+    "learning_rate": 0.01,
+    "max_depth": 8,
+    "min_child_weight": 1,
+    "subsample": 0.9,
+    "colsample_bytree": 0.9,
+    "reg_alpha": 0.01,
+    "reg_lambda": 0.01,
+    "tree_method": "hist",
+    "eval_metric": "logloss"
+  },
+  
+  "training": {
+    "_说明": "训练策略配置",
+    "balance_strategy": "undersample_1to1",
+    "use_feature_interactions": true,
+    "target_dual_accuracy": 0.90
+  },
+  
+  "sampling": {
+    "_说明": "采样配置",
+    "mode": "window",
+    "window_sec": 120.0,
+    "step_sec": 90.0,
+    "min_points": 10,
+    "max_windows_per_file": 20,
+    "num_workers": 12
+  }
+}

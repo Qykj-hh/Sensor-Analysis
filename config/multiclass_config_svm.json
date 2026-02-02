@@ -1,0 +1,35 @@
+{
+  "_说明": "SVM多分类模型训练配置",
+  
+  "seed": 42,
+  "test_size": 0.15,
+  "data_dir": "dataset/Abnormal",
+  "output_dir": "artifacts/svm/multiclass",
+  
+  "multiclass_params": {
+    "_说明": "SVM多分类参数",
+    "kernel": "rbf",
+    "C": 1.0,
+    "gamma": "scale",
+    "probability": true,
+    "max_iter": 10000,
+    "decision_function_shape": "ovr"
+  },
+  
+  "training": {
+    "_说明": "训练策略配置",
+    "use_feature_interactions": true,
+    "use_scaling": true,
+    "_use_scaling说明": "SVM需要特征缩放"
+  },
+  
+  "sampling": {
+    "_说明": "采样配置",
+    "mode": "window",
+    "window_sec": 600.0,
+    "step_sec": 180.0,
+    "min_points": 15,
+    "max_windows_per_file": 15,
+    "num_workers": 12
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "_说明": "Random Forest二分类模型训练配置",
+  
+  "seed": 42,
+  "test_size": 0.15,
+  "data_dir": "dataset",
+  "output_dir": "artifacts/random_forest/binary",
+  
+  "binary_params": {
+    "_说明": "Random Forest二分类参数",
+    "n_estimators": 300,
+    "max_depth": 10,
+    "min_samples_split": 5,
+    "min_samples_leaf": 2,
+    "max_features": "sqrt",
+    "bootstrap": true,
+    "oob_score": true,
+    "n_jobs": -1
+  },
+  
+  "training": {
+    "_说明": "训练策略配置",
+    "balance_strategy": "undersample_1to1",
+    "use_feature_interactions": true,
+    "target_dual_accuracy": 0.90
+  },
+  
+  "sampling": {
+    "_说明": "采样配置",
+    "mode": "window",
+    "window_sec": 120.0,
+    "step_sec": 90.0,
+    "min_points": 10,
+    "max_windows_per_file": 20,
+    "num_workers": 12
+  }
+}

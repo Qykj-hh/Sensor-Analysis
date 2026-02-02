@@ -1,0 +1,1938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visualization Verification System - Real-time Prediction</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <style>
+        :root {
+            --bg-dark: #1a1a2e;
+            --bg-panel: #16213e;
+            --accent: #0f3460;
+            --highlight: #e94560;
+            --success: #00d9a5;
+            --warning: #f39c12;
+            --text: #eaeaea;
+            --text-dim: #8892a0;
+            --border: #2a3f5f;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        .header {
+            background: linear-gradient(135deg, var(--bg-panel), var(--accent));
+            padding: 20px 30px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 22px;
+            font-weight: 500;
+            letter-spacing: 1px;
+        }
+
+        .header-info {
+            display: flex;
+            gap: 30px;
+            font-size: 14px;
+        }
+
+        .header-info span {
+            color: var(--text-dim);
+        }
+
+        .header-info strong {
+            color: var(--success);
+        }
+
+        .main-container {
+            display: grid;
+            grid-template-columns: 1fr 320px;
+            gap: 20px;
+            padding: 20px;
+            height: calc(100vh - 80px);
+        }
+
+        .chart-section {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .panel {
+            background: var(--bg-panel);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-header h3 {
+            font-size: 15px;
+            font-weight: 500;
+            color: var(--text-dim);
+        }
+
+        .panel-body {
+            padding: 20px;
+        }
+
+        /* 预警状态 */
+        .alert-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .alert-status.normal {
+            background: rgba(0, 217, 165, 0.15);
+            color: var(--success);
+        }
+
+        .alert-status.warning {
+            background: rgba(243, 156, 18, 0.15);
+            color: var(--warning);
+            animation: pulse 1s infinite;
+        }
+
+        .alert-status.danger {
+            background: rgba(233, 69, 96, 0.2);
+            color: var(--highlight);
+            animation: pulse 0.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        /* 主图表 */
+        .main-chart {
+            flex: 1;
+            min-height: 300px;
+        }
+
+        .main-chart .panel-body {
+            height: calc(100% - 60px);
+        }
+
+        /* 概率分布 */
+        .prob-chart {
+            height: 200px;
+        }
+
+        /* 侧边栏 */
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        /* 控制面板 */
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .control-btn {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .control-btn.primary {
+            background: linear-gradient(135deg, var(--success), #00b894);
+            color: #fff;
+        }
+
+        .control-btn.primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 217, 165, 0.3);
+        }
+
+        .control-btn.secondary {
+            background: var(--accent);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
+        .control-btn.danger {
+            background: linear-gradient(135deg, var(--highlight), #c0392b);
+            color: #fff;
+        }
+
+        .control-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        /* 速度控制 */
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .speed-control label {
+            font-size: 13px;
+            color: var(--text-dim);
+        }
+
+        .speed-control select {
+            flex: 1;
+            padding: 8px 12px;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 13px;
+        }
+
+        /* 事件列表 */
+        .event-list {
+            flex: 1;
+            overflow-y: auto;
+            max-height: 300px;
+        }
+
+        .event-item {
+            padding: 12px 15px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .event-item:last-child {
+            border-bottom: none;
+        }
+
+        .event-time {
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+
+        .event-type {
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .event-type.abort {
+            color: var(--highlight);
+        }
+
+        .event-type.warning {
+            color: var(--warning);
+        }
+
+        .event-type.success {
+            color: var(--success);
+        }
+
+        /* 统计卡片 */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .stat-card {
+            background: var(--bg-dark);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .stat-value.highlight { color: var(--highlight); }
+        .stat-value.success { color: var(--success); }
+        .stat-value.warning { color: var(--warning); }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* 当前预测 */
+        .current-prediction {
+            text-align: center;
+            padding: 20px;
+        }
+
+        .pred-label {
+            font-size: 13px;
+            color: var(--text-dim);
+            margin-bottom: 10px;
+        }
+
+        .pred-value {
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .pred-class {
+            font-size: 14px;
+            padding: 5px 15px;
+            border-radius: 15px;
+            display: inline-block;
+            margin-top: 10px;
+        }
+
+        .pred-class.normal {
+            background: rgba(0, 217, 165, 0.2);
+            color: var(--success);
+        }
+
+        .pred-class.abnormal {
+            background: rgba(233, 69, 96, 0.2);
+            color: var(--highlight);
+        }
+
+        /* 时间显示 */
+        .time-display {
+            text-align: center;
+            padding: 15px;
+            background: var(--bg-dark);
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .time-display .date {
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+
+        .time-display .time {
+            font-size: 22px;
+            font-weight: 600;
+            font-family: 'Consolas', monospace;
+        }
+
+        /* 图例 */
+        .legend {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+        }
+
+        /* 进度条 */
+        .progress-bar {
+            height: 4px;
+            background: var(--bg-dark);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 15px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--success), var(--accent));
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1>Visualization Verification System - LightGBM Beam Abort Prediction</h1>
+        <div class="header-info">
+            <div>Test Period: <strong>Oct 9 - Oct 31, 2024</strong></div>
+            <div id="sensorStatus">Sensors: <strong id="sensorCount">Loading...</strong></div>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <div class="chart-section">
+            <!-- Main time series chart -->
+            <div class="panel main-chart">
+                <div class="panel-header">
+                    <h3>Prediction Probability Time Series</h3>
+                    <div class="legend">
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #e94560;"></div>
+                            <span>Abnormal Prob.</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #00d9a5;"></div>
+                            <span>Normal Prob.</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #f39c12; height: 2px; width: 20px;"></div>
+                            <span>Threshold (0.85)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #e94560; width: 2px; height: 12px;"></div>
+                            <span>Abort Event</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <canvas id="mainChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Category probability distribution -->
+            <div class="panel prob-chart">
+                <div class="panel-header">
+                    <h3>Current Category Prediction Probabilities</h3>
+                    <div id="currentTimeLabel" style="font-size: 13px; color: var(--text-dim);">--:--:--</div>
+                </div>
+                <div class="panel-body">
+                    <canvas id="probChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="sidebar">
+            <!-- Current status -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h3>System Status</h3>
+                    <div id="alertStatus" class="alert-status normal">
+                        <div class="status-dot"></div>
+                        <span>Normal</span>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="time-display">
+                        <div class="date" id="currentDate">Oct 9, 2024</div>
+                        <div class="time" id="currentTime">00:00:00</div>
+                    </div>
+                    
+                    <div class="current-prediction">
+                        <div class="pred-label">Abnormal Prediction Probability</div>
+                        <div class="pred-value" id="predValue">0.00</div>
+                        <div class="pred-class normal" id="predClass">Normal</div>
+                    </div>
+
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Control panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h3>Control Panel</h3>
+                </div>
+                <div class="panel-body controls">
+                    <button class="control-btn primary" id="startBtn" onclick="startSimulation()">
+                        ▶ Start
+                    </button>
+                    <button class="control-btn secondary" id="pauseBtn" onclick="pauseSimulation()" disabled>
+                        ⏸ Pause
+                    </button>
+                    <button class="control-btn danger" onclick="resetSimulation()">
+                        ↺ Reset
+                    </button>
+                    <div class="speed-control">
+                        <label>Speed:</label>
+                        <select id="speedSelect" onchange="changeSpeed()">
+                            <option value="1000">1x (Real-time)</option>
+                            <option value="500">2x</option>
+                            <option value="200" selected>5x</option>
+                            <option value="100">10x</option>
+                            <option value="50">20x</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Statistics -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h3>Real-time Statistics</h3>
+                </div>
+                <div class="panel-body">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-value highlight" id="statAborts">0</div>
+                            <div class="stat-label">Abort Events</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value success" id="statWarnings">0</div>
+                            <div class="stat-label">Warnings</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value warning" id="statMissed">0</div>
+                            <div class="stat-label">Missed</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="statAccuracy">--</div>
+                            <div class="stat-label">Warning Rate</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Event log -->
+            <div class="panel" style="flex: 1; display: flex; flex-direction: column;">
+                <div class="panel-header">
+                    <h3>Event Log</h3>
+                </div>
+                <div class="event-list" id="eventList">
+                    <div class="event-item">
+                        <div class="event-time">Waiting...</div>
+                        <div class="event-type">System Ready</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Real October 2024 abort events from aborts.json (866 events)
+        // Will be updated from API if available
+        let REAL_ABORT_EVENTS = [
+            {ts: "2024-10-09 14:50:28", type: "Loss Monitor"},
+            {ts: "2024-10-09 14:54:52", type: "Loss Monitor"},
+            {ts: "2024-10-09 14:55:33", type: "Loss Monitor"},
+            {ts: "2024-10-09 14:58:19", type: "Loss Monitor"},
+            {ts: "2024-10-09 14:58:50", type: "Loss Monitor"},
+            {ts: "2024-10-09 15:18:51", type: "Manual Abort"},
+            {ts: "2024-10-09 15:27:24", type: "Manual Abort"},
+            {ts: "2024-10-09 16:47:11", type: "Manual Abort"},
+            {ts: "2024-10-09 19:23:27", type: "Manual Abort"},
+            {ts: "2024-10-09 19:26:35", type: "Manual Abort"},
+            {ts: "2024-10-09 19:31:08", type: "Manual Abort"},
+            {ts: "2024-10-09 19:33:59", type: "Manual Abort"},
+            {ts: "2024-10-09 19:36:25", type: "Manual Abort"},
+            {ts: "2024-10-09 19:38:05", type: "Manual Abort"},
+            {ts: "2024-10-09 19:38:56", type: "Manual Abort"},
+            {ts: "2024-10-09 19:40:19", type: "Manual Abort"},
+            {ts: "2024-10-09 19:41:48", type: "Manual Abort"},
+            {ts: "2024-10-09 19:43:32", type: "Manual Abort"},
+            {ts: "2024-10-09 19:44:01", type: "Manual Abort"},
+            {ts: "2024-10-09 19:45:05", type: "Manual Abort"},
+            {ts: "2024-10-09 19:48:45", type: "Manual Abort"},
+            {ts: "2024-10-09 19:50:58", type: "Manual Abort"},
+            {ts: "2024-10-10 08:52:53", type: "Manual Abort"},
+            {ts: "2024-10-10 10:01:03", type: "Loss Monitor"},
+            {ts: "2024-10-10 10:16:00", type: "Loss Monitor"},
+            {ts: "2024-10-10 12:05:21", type: "Manual Abort"},
+            {ts: "2024-10-10 12:06:32", type: "Manual Abort"},
+            {ts: "2024-10-10 13:36:01", type: "Manual Abort"},
+            {ts: "2024-10-10 18:42:27", type: "Manual Abort"},
+            {ts: "2024-10-10 18:43:39", type: "Manual Abort"},
+            {ts: "2024-10-10 18:46:36", type: "Manual Abort"},
+            {ts: "2024-10-10 18:48:19", type: "Manual Abort"},
+            {ts: "2024-10-10 18:49:47", type: "Manual Abort"},
+            {ts: "2024-10-10 18:52:55", type: "Manual Abort"},
+            {ts: "2024-10-10 18:54:12", type: "Manual Abort"},
+            {ts: "2024-10-10 18:55:15", type: "Manual Abort"},
+            {ts: "2024-10-10 18:56:06", type: "Manual Abort"},
+            {ts: "2024-10-10 18:57:15", type: "Manual Abort"},
+            {ts: "2024-10-10 19:00:26", type: "Manual Abort"},
+            {ts: "2024-10-10 19:55:34", type: "Loss Monitor"},
+            {ts: "2024-10-10 20:25:08", type: "Manual Abort"},
+            {ts: "2024-10-10 21:12:23", type: "CLAWS D05V1"},
+            {ts: "2024-10-10 21:29:54", type: "Loss Monitor"},
+            {ts: "2024-10-10 22:11:36", type: "Loss Monitor"},
+            {ts: "2024-10-11 05:04:53", type: "Other"},
+            {ts: "2024-10-11 07:06:07", type: "Other"},
+            {ts: "2024-10-11 08:35:28", type: "RF"},
+            {ts: "2024-10-11 10:51:12", type: "CLAWS D05V1"},
+            {ts: "2024-10-11 13:00:48", type: "CLAWS D05V1"},
+            {ts: "2024-10-11 13:30:57", type: "CLAWS D05V1"},
+            {ts: "2024-10-11 13:47:45", type: "Manual Abort"},
+            {ts: "2024-10-11 14:04:48", type: "Manual Abort"},
+            {ts: "2024-10-11 14:28:53", type: "Manual Abort"},
+            {ts: "2024-10-11 15:02:17", type: "Manual Abort"},
+            {ts: "2024-10-11 19:43:25", type: "Manual Abort"},
+            {ts: "2024-10-11 19:47:55", type: "Manual Abort"},
+            {ts: "2024-10-11 19:55:34", type: "Manual Abort"},
+            {ts: "2024-10-11 19:56:38", type: "Manual Abort"},
+            {ts: "2024-10-11 19:57:29", type: "Manual Abort"},
+            {ts: "2024-10-11 19:58:43", type: "Manual Abort"},
+            {ts: "2024-10-11 19:59:07", type: "Manual Abort"},
+            {ts: "2024-10-11 19:59:33", type: "Manual Abort"},
+            {ts: "2024-10-11 19:59:51", type: "Manual Abort"},
+            {ts: "2024-10-11 20:00:27", type: "Manual Abort"},
+            {ts: "2024-10-11 20:04:48", type: "Manual Abort"},
+            {ts: "2024-10-11 20:08:05", type: "Manual Abort"},
+            {ts: "2024-10-11 20:09:11", type: "Manual Abort"},
+            {ts: "2024-10-11 20:10:33", type: "Manual Abort"},
+            {ts: "2024-10-11 20:11:29", type: "Manual Abort"},
+            {ts: "2024-10-11 20:12:20", type: "Manual Abort"},
+            {ts: "2024-10-11 20:14:11", type: "Manual Abort"},
+            {ts: "2024-10-11 20:14:56", type: "Manual Abort"},
+            {ts: "2024-10-11 20:17:10", type: "Manual Abort"},
+            {ts: "2024-10-11 23:00:31", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 01:37:43", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 01:54:41", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 03:11:43", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 03:49:22", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 05:42:26", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 06:40:26", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 07:14:48", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 12:20:42", type: "RF"},
+            {ts: "2024-10-12 13:52:34", type: "Manual Abort"},
+            {ts: "2024-10-12 14:11:40", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 15:41:17", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 16:52:21", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 17:14:12", type: "CLAWS D05V1"},
+            {ts: "2024-10-12 18:15:52", type: "Manual Abort"},
+            {ts: "2024-10-12 19:29:41", type: "Manual Abort"},
+            {ts: "2024-10-12 20:10:59", type: "Loss Monitor"},
+            {ts: "2024-10-13 00:10:19", type: "Loss Monitor"},
+            {ts: "2024-10-13 00:25:55", type: "CLAWS D05V1"},
+            {ts: "2024-10-13 03:50:43", type: "Loss Monitor"},
+            {ts: "2024-10-13 05:14:31", type: "CLAWS D05V1"},
+            {ts: "2024-10-13 08:54:45", type: "CLAWS D05V1"},
+            {ts: "2024-10-13 09:25:05", type: "CLAWS D05V1"},
+            {ts: "2024-10-13 11:42:06", type: "RF"},
+            {ts: "2024-10-13 12:47:28", type: "Low THR VXD diamond"},
+            {ts: "2024-10-13 14:34:59", type: "CLAWS D05V1"},
+            {ts: "2024-10-13 14:58:17", type: "Belle2 CLAWS"},
+            {ts: "2024-10-13 15:23:45", type: "Low THR VXD diamond"},
+            {ts: "2024-10-13 15:25:49", type: "Low THR VXD diamond"},
+            {ts: "2024-10-13 15:49:00", type: "CLAWS D05V1"},
+            {ts: "2024-10-13 16:09:57", type: "CLAWS D05V1"},
+            {ts: "2024-10-13 17:12:50", type: "Low THR VXD diamond"},
+            {ts: "2024-10-14 00:14:02", type: "Low THR VXD diamond"},
+            {ts: "2024-10-14 00:14:03", type: "Low THR VXD diamond"},
+            {ts: "2024-10-14 00:34:59", type: "Loss Monitor"},
+            {ts: "2024-10-14 01:44:57", type: "CLAWS D05V1"},
+            {ts: "2024-10-14 02:20:23", type: "CLAWS D05V1"},
+            {ts: "2024-10-14 10:34:18", type: "CLAWS D05V1"},
+            {ts: "2024-10-14 11:04:38", type: "CLAWS D05V1"},
+            {ts: "2024-10-14 12:49:37", type: "CLAWS D05V1"},
+            {ts: "2024-10-14 15:02:48", type: "CLAWS D05V1"},
+            {ts: "2024-10-15 01:18:05", type: "RF"},
+            {ts: "2024-10-15 05:30:07", type: "CLAWS D05V1"},
+            {ts: "2024-10-15 08:03:25", type: "RF"},
+            {ts: "2024-10-15 08:37:15", type: "CLAWS D05V1"},
+            {ts: "2024-10-15 10:14:13", type: "Manual Abort"},
+            {ts: "2024-10-15 10:21:28", type: "Manual Abort"},
+            {ts: "2024-10-15 11:30:37", type: "CLAWS D05V1"},
+            {ts: "2024-10-15 19:08:51", type: "Low THR VXD diamond"},
+            {ts: "2024-10-15 19:32:01", type: "Loss Monitor"},
+            {ts: "2024-10-15 20:04:24", type: "CLAWS D05V1"},
+            {ts: "2024-10-15 20:22:58", type: "Belle2 CLAWS"},
+            {ts: "2024-10-15 20:56:48", type: "CLAWS D05V1"},
+            {ts: "2024-10-15 21:28:07", type: "CLAWS D05V1"},
+            {ts: "2024-10-15 22:27:16", type: "CLAWS D05V1"},
+            {ts: "2024-10-15 22:52:25", type: "Belle2 CLAWS"},
+            {ts: "2024-10-15 23:43:12", type: "RF"},
+            {ts: "2024-10-16 01:06:07", type: "Low THR VXD diamond"},
+            {ts: "2024-10-16 01:29:19", type: "Loss Monitor"},
+            {ts: "2024-10-16 01:58:35", type: "CLAWS D05V1"},
+            {ts: "2024-10-16 02:27:56", type: "Loss Monitor"},
+            {ts: "2024-10-16 04:52:13", type: "Loss Monitor"},
+            {ts: "2024-10-16 07:17:09", type: "Loss Monitor"},
+            {ts: "2024-10-16 08:57:46", type: "Loss Monitor"},
+            {ts: "2024-10-16 16:48:53", type: "Loss Monitor"},
+            {ts: "2024-10-16 16:53:23", type: "Loss Monitor"},
+            {ts: "2024-10-16 16:54:36", type: "Loss Monitor"},
+            {ts: "2024-10-16 17:12:53", type: "Loss Monitor"},
+            {ts: "2024-10-16 17:13:13", type: "Loss Monitor"},
+            {ts: "2024-10-16 17:53:33", type: "Loss Monitor"},
+            {ts: "2024-10-16 18:24:39", type: "Loss Monitor"},
+            {ts: "2024-10-16 18:25:06", type: "Loss Monitor"},
+            {ts: "2024-10-16 18:27:06", type: "Loss Monitor"},
+            {ts: "2024-10-16 19:22:33", type: "Loss Monitor"},
+            {ts: "2024-10-16 19:23:03", type: "Loss Monitor"},
+            {ts: "2024-10-16 19:24:44", type: "Loss Monitor"},
+            {ts: "2024-10-16 19:25:26", type: "Loss Monitor"},
+            {ts: "2024-10-16 20:01:35", type: "Loss Monitor"},
+            {ts: "2024-10-16 20:05:09", type: "Loss Monitor"},
+            {ts: "2024-10-16 20:51:00", type: "Loss Monitor"},
+            {ts: "2024-10-16 21:37:37", type: "Loss Monitor"},
+            {ts: "2024-10-16 21:39:22", type: "Loss Monitor"},
+            {ts: "2024-10-16 21:39:40", type: "Loss Monitor"},
+            {ts: "2024-10-16 21:49:36", type: "Loss Monitor"},
+            {ts: "2024-10-16 21:54:32", type: "Loss Monitor"},
+            {ts: "2024-10-16 21:56:26", type: "Loss Monitor"},
+            {ts: "2024-10-16 21:57:36", type: "Loss Monitor"},
+            {ts: "2024-10-16 21:58:31", type: "Loss Monitor"},
+            {ts: "2024-10-16 22:29:45", type: "Loss Monitor"},
+            {ts: "2024-10-17 00:58:35", type: "Loss Monitor"},
+            {ts: "2024-10-17 01:03:20", type: "Loss Monitor"},
+            {ts: "2024-10-17 01:04:59", type: "Loss Monitor"},
+            {ts: "2024-10-17 01:12:08", type: "Loss Monitor"},
+            {ts: "2024-10-17 09:02:56", type: "CLAWS D05V1"},
+            {ts: "2024-10-17 09:32:04", type: "CLAWS D05V1"},
+            {ts: "2024-10-17 10:18:44", type: "Manual Abort"},
+            {ts: "2024-10-17 10:31:12", type: "Manual Abort"},
+            {ts: "2024-10-17 10:56:38", type: "Manual Abort"},
+            {ts: "2024-10-17 11:14:13", type: "Manual Abort"},
+            {ts: "2024-10-17 14:55:41", type: "Manual Abort"},
+            {ts: "2024-10-17 18:11:20", type: "Low THR VXD diamond"},
+            {ts: "2024-10-17 21:48:07", type: "RF"},
+            {ts: "2024-10-18 00:17:47", type: "RF"},
+            {ts: "2024-10-18 02:10:47", type: "CLAWS D05V1"},
+            {ts: "2024-10-18 02:29:32", type: "Loss Monitor"},
+            {ts: "2024-10-18 03:07:21", type: "Loss Monitor"},
+            {ts: "2024-10-18 03:27:50", type: "CLAWS D05V1"},
+            {ts: "2024-10-18 03:45:41", type: "Loss Monitor"},
+            {ts: "2024-10-18 09:17:05", type: "Loss Monitor"},
+            {ts: "2024-10-18 09:50:39", type: "Manual Abort"},
+            {ts: "2024-10-18 09:50:41", type: "Manual Abort"},
+            {ts: "2024-10-18 10:04:59", type: "RF"},
+            {ts: "2024-10-18 10:27:24", type: "Manual Abort"},
+            {ts: "2024-10-18 10:38:31", type: "Manual Abort"},
+            {ts: "2024-10-18 13:50:29", type: "Loss Monitor"},
+            {ts: "2024-10-18 14:23:48", type: "Loss Monitor"},
+            {ts: "2024-10-18 15:51:22", type: "Loss Monitor"},
+            {ts: "2024-10-18 17:20:54", type: "RF"},
+            {ts: "2024-10-18 18:26:55", type: "CLAWS D05V1"},
+            {ts: "2024-10-18 19:02:07", type: "Loss Monitor"},
+            {ts: "2024-10-18 19:19:13", type: "Loss Monitor"},
+            {ts: "2024-10-18 19:22:54", type: "Loss Monitor"},
+            {ts: "2024-10-18 20:01:38", type: "Low THR VXD diamond"},
+            {ts: "2024-10-18 22:32:42", type: "Loss Monitor"},
+            {ts: "2024-10-18 23:01:11", type: "CLAWS D05V1"},
+            {ts: "2024-10-19 00:02:36", type: "CLAWS D05V1"},
+            {ts: "2024-10-19 01:22:42", type: "CLAWS D05V1"},
+            {ts: "2024-10-19 01:45:36", type: "Loss Monitor"},
+            {ts: "2024-10-19 02:46:12", type: "Loss Monitor"},
+            {ts: "2024-10-19 03:13:16", type: "CLAWS D05V1"},
+            {ts: "2024-10-19 03:53:55", type: "RF"},
+            {ts: "2024-10-19 05:21:33", type: "Belle2 CLAWS"},
+            {ts: "2024-10-19 06:12:18", type: "Loss Monitor"},
+            {ts: "2024-10-19 06:35:19", type: "Loss Monitor"},
+            {ts: "2024-10-19 09:05:05", type: "Loss Monitor"},
+            {ts: "2024-10-19 09:30:04", type: "Loss Monitor"},
+            {ts: "2024-10-19 10:19:11", type: "Loss Monitor"},
+            {ts: "2024-10-19 10:52:14", type: "Loss Monitor"},
+            {ts: "2024-10-19 14:42:23", type: "CLAWS D05V1"},
+            {ts: "2024-10-19 17:05:52", type: "CLAWS D05V1"},
+            {ts: "2024-10-19 18:05:54", type: "CLAWS D05V1"},
+            {ts: "2024-10-19 18:31:04", type: "Loss Monitor"},
+            {ts: "2024-10-19 18:50:13", type: "Loss Monitor"},
+            {ts: "2024-10-19 19:41:16", type: "Loss Monitor"},
+            {ts: "2024-10-19 21:33:35", type: "Belle2 CLAWS"},
+            {ts: "2024-10-20 03:10:49", type: "Loss Monitor"},
+            {ts: "2024-10-20 08:12:09", type: "RF"},
+            {ts: "2024-10-20 08:41:29", type: "Loss Monitor"},
+            {ts: "2024-10-20 08:44:19", type: "Loss Monitor"},
+            {ts: "2024-10-20 10:14:51", type: "CLAWS D05V1"},
+            {ts: "2024-10-20 11:00:24", type: "Loss Monitor"},
+            {ts: "2024-10-20 13:22:21", type: "Loss Monitor"},
+            {ts: "2024-10-20 13:51:28", type: "CLAWS D05V1"},
+            {ts: "2024-10-20 20:21:43", type: "Loss Monitor"},
+            {ts: "2024-10-20 20:53:49", type: "Belle2 CLAWS"},
+            {ts: "2024-10-20 21:14:55", type: "Loss Monitor"},
+            {ts: "2024-10-20 21:28:46", type: "Low THR VXD diamond"},
+            {ts: "2024-10-21 00:19:57", type: "CLAWS D05V1"},
+            {ts: "2024-10-21 00:35:04", type: "CLAWS D05V1"},
+            {ts: "2024-10-21 00:57:34", type: "CLAWS D05V1"},
+            {ts: "2024-10-21 01:18:41", type: "RF"},
+            {ts: "2024-10-21 07:54:24", type: "CLAWS D05V1"},
+            {ts: "2024-10-21 08:08:51", type: "Loss Monitor"},
+            {ts: "2024-10-21 08:59:33", type: "Loss Monitor"},
+            {ts: "2024-10-21 10:02:35", type: "RF"},
+            {ts: "2024-10-21 11:10:21", type: "Manual Abort"},
+            {ts: "2024-10-21 17:46:54", type: "Manual Abort"},
+            {ts: "2024-10-21 19:13:59", type: "Manual Abort"},
+            {ts: "2024-10-21 19:26:58", type: "Loss Monitor"},
+            {ts: "2024-10-21 19:28:14", type: "Loss Monitor"},
+            {ts: "2024-10-21 19:29:15", type: "Loss Monitor"},
+            {ts: "2024-10-21 19:30:17", type: "Loss Monitor"},
+            {ts: "2024-10-21 19:32:31", type: "Loss Monitor"},
+            {ts: "2024-10-21 19:33:06", type: "Loss Monitor"},
+            {ts: "2024-10-21 19:40:01", type: "Loss Monitor"},
+            {ts: "2024-10-21 19:40:58", type: "Loss Monitor"},
+            {ts: "2024-10-21 19:41:27", type: "Loss Monitor"},
+            {ts: "2024-10-21 19:42:30", type: "Loss Monitor"},
+            {ts: "2024-10-21 19:43:52", type: "Loss Monitor"},
+            {ts: "2024-10-21 20:31:50", type: "Manual Abort"},
+            {ts: "2024-10-21 20:35:31", type: "Loss Monitor"},
+            {ts: "2024-10-21 20:41:53", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 20:46:39", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 20:47:24", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 20:54:28", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:02:18", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:02:41", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:04:23", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:04:56", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:07:36", type: "Low THR VXD diamond"},
+            {ts: "2024-10-21 21:08:33", type: "Low THR VXD diamond"},
+            {ts: "2024-10-21 21:09:16", type: "Low THR VXD diamond"},
+            {ts: "2024-10-21 21:09:47", type: "Low THR VXD diamond"},
+            {ts: "2024-10-21 21:10:00", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:10:14", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:11:46", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 21:12:43", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:13:05", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:13:41", type: "Loss Monitor"},
+            {ts: "2024-10-21 21:13:59", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:14:17", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:14:53", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:15:11", type: "Loss Monitor"},
+            {ts: "2024-10-21 21:15:48", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:18:27", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:18:58", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:19:11", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:19:23", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:19:36", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 21:40:35", type: "Manual Abort"},
+            {ts: "2024-10-21 22:04:08", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 22:05:20", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 22:10:12", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 22:25:40", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 22:26:54", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 22:27:26", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 22:28:40", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 22:58:29", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 22:59:08", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 22:59:28", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 22:59:41", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 22:59:56", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 23:00:09", type: "Low THR VXD diamond"},
+            {ts: "2024-10-21 23:00:23", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 23:00:39", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 23:00:53", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 23:01:09", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 23:02:14", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 23:02:28", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 23:02:44", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 23:03:02", type: "Loss Monitor"},
+            {ts: "2024-10-21 23:03:18", type: "Loss Monitor"},
+            {ts: "2024-10-21 23:04:44", type: "High THR VXD diamond"},
+            {ts: "2024-10-21 23:04:59", type: "Belle2 CLAWS"},
+            {ts: "2024-10-21 23:06:31", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 00:58:29", type: "CLAWS D05V1"},
+            {ts: "2024-10-22 02:30:08", type: "CLAWS D05V1"},
+            {ts: "2024-10-22 03:00:15", type: "Loss Monitor"},
+            {ts: "2024-10-22 03:20:25", type: "Loss Monitor"},
+            {ts: "2024-10-22 06:11:18", type: "Loss Monitor"},
+            {ts: "2024-10-22 06:38:25", type: "Loss Monitor"},
+            {ts: "2024-10-22 09:20:04", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 09:37:15", type: "CLAWS D05V1"},
+            {ts: "2024-10-22 09:45:58", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 09:46:55", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 09:56:31", type: "Loss Monitor"},
+            {ts: "2024-10-22 10:05:47", type: "High THR VXD diamond"},
+            {ts: "2024-10-22 10:07:23", type: "High THR VXD diamond"},
+            {ts: "2024-10-22 10:07:49", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 10:08:07", type: "High THR VXD diamond"},
+            {ts: "2024-10-22 10:08:22", type: "High THR VXD diamond"},
+            {ts: "2024-10-22 10:08:41", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 10:09:01", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 10:09:18", type: "High THR VXD diamond"},
+            {ts: "2024-10-22 10:11:00", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 10:13:09", type: "High THR VXD diamond"},
+            {ts: "2024-10-22 10:40:44", type: "Loss Monitor"},
+            {ts: "2024-10-22 11:03:13", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 11:53:01", type: "High THR VXD diamond"},
+            {ts: "2024-10-22 11:56:07", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 11:57:53", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 11:59:10", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 11:59:46", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 12:00:27", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 12:01:15", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 12:01:32", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 12:01:45", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 12:01:58", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 12:02:19", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 12:03:19", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 12:04:42", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 12:06:14", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 12:07:11", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 15:04:19", type: "High THR VXD diamond"},
+            {ts: "2024-10-22 15:05:04", type: "High THR VXD diamond"},
+            {ts: "2024-10-22 15:05:50", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 15:06:54", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 15:07:41", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 15:09:22", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 15:11:32", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 15:12:51", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 15:14:56", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 15:17:40", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 15:21:01", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 15:22:05", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 15:23:09", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 15:23:35", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 15:28:02", type: "Belle2 CLAWS"},
+            {ts: "2024-10-22 20:58:00", type: "Manual Abort"},
+            {ts: "2024-10-22 21:13:31", type: "Low THR VXD diamond"},
+            {ts: "2024-10-22 22:17:11", type: "Manual Abort"},
+            {ts: "2024-10-22 22:31:13", type: "Manual Abort"},
+            {ts: "2024-10-22 22:51:59", type: "Manual Abort"},
+            {ts: "2024-10-22 23:02:15", type: "Manual Abort"},
+            {ts: "2024-10-22 23:13:31", type: "Loss Monitor"},
+            {ts: "2024-10-22 23:13:59", type: "Loss Monitor"},
+            {ts: "2024-10-22 23:14:52", type: "Loss Monitor"},
+            {ts: "2024-10-22 23:19:43", type: "Loss Monitor"},
+            {ts: "2024-10-22 23:20:22", type: "Loss Monitor"},
+            {ts: "2024-10-23 00:07:56", type: "Loss Monitor"},
+            {ts: "2024-10-23 02:21:43", type: "CLAWS D05V1"},
+            {ts: "2024-10-23 03:16:56", type: "Loss Monitor"},
+            {ts: "2024-10-23 09:45:49", type: "Manual Abort"},
+            {ts: "2024-10-23 11:30:50", type: "Manual Abort"},
+            {ts: "2024-10-23 11:31:40", type: "RF"},
+            {ts: "2024-10-23 13:58:11", type: "RF"},
+            {ts: "2024-10-23 14:02:11", type: "Other"},
+            {ts: "2024-10-23 18:56:02", type: "Manual Abort"},
+            {ts: "2024-10-23 19:22:59", type: "High THR VXD diamond"},
+            {ts: "2024-10-23 19:26:19", type: "Loss Monitor"},
+            {ts: "2024-10-23 20:38:54", type: "Manual Abort"},
+            {ts: "2024-10-23 20:55:51", type: "Belle2 CLAWS"},
+            {ts: "2024-10-23 20:56:25", type: "High THR VXD diamond"},
+            {ts: "2024-10-23 20:56:43", type: "Low THR VXD diamond"},
+            {ts: "2024-10-23 20:57:53", type: "High THR VXD diamond"},
+            {ts: "2024-10-23 20:59:13", type: "Belle2 CLAWS"},
+            {ts: "2024-10-23 20:59:29", type: "Belle2 CLAWS"},
+            {ts: "2024-10-23 20:59:46", type: "Belle2 CLAWS"},
+            {ts: "2024-10-23 21:00:12", type: "Belle2 CLAWS"},
+            {ts: "2024-10-23 21:03:12", type: "Belle2 CLAWS"},
+            {ts: "2024-10-23 21:30:37", type: "Manual Abort"},
+            {ts: "2024-10-23 23:59:32", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 00:00:41", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 00:01:45", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 09:48:14", type: "Manual Abort"},
+            {ts: "2024-10-24 11:32:33", type: "Manual Abort"},
+            {ts: "2024-10-24 11:32:38", type: "Manual Abort"},
+            {ts: "2024-10-24 15:55:22", type: "Manual Abort"},
+            {ts: "2024-10-24 15:56:04", type: "Manual Abort"},
+            {ts: "2024-10-24 16:23:31", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:25:17", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:25:44", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:26:06", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:26:23", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:27:51", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:28:50", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:32:58", type: "Loss Monitor"},
+            {ts: "2024-10-24 16:34:27", type: "Loss Monitor"},
+            {ts: "2024-10-24 16:45:53", type: "Low THR VXD diamond"},
+            {ts: "2024-10-24 16:46:15", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:46:36", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:46:52", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:47:27", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:47:53", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:48:18", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:48:45", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:48:58", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:49:14", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:49:37", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:49:51", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:50:08", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:50:23", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:50:36", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:50:59", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:51:20", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:51:38", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:51:51", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:52:10", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:52:46", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:54:04", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:54:28", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:54:41", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:54:57", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:55:11", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 16:56:17", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 17:32:33", type: "Manual Abort"},
+            {ts: "2024-10-24 17:35:54", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 17:36:20", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 17:36:51", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 17:37:09", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 17:53:42", type: "Manual Abort"},
+            {ts: "2024-10-24 18:09:00", type: "Manual Abort"},
+            {ts: "2024-10-24 19:26:07", type: "Manual Abort"},
+            {ts: "2024-10-24 19:28:00", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:28:18", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:28:46", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:29:56", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:31:03", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:31:19", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:31:32", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:31:48", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:32:08", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:32:34", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:32:49", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:33:03", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:33:39", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:34:10", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:34:22", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:35:40", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:36:08", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:36:37", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:36:52", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:37:39", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:39:19", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:41:20", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:41:37", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:41:52", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:49:11", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 19:51:17", type: "Belle2 CLAWS"},
+            {ts: "2024-10-24 21:36:50", type: "Manual Abort"},
+            {ts: "2024-10-24 22:36:02", type: "Manual Abort"},
+            {ts: "2024-10-24 23:18:37", type: "Manual Abort"},
+            {ts: "2024-10-24 23:56:23", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 01:51:51", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 01:56:10", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 02:11:01", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 02:19:40", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 02:27:26", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 02:34:27", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 02:36:35", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 02:37:14", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 02:51:32", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 03:20:15", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 03:22:58", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 03:34:58", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 03:36:44", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 05:50:28", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 05:52:41", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 05:53:52", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 05:55:55", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 05:57:29", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:22:54", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:26:02", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:26:32", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:27:12", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:27:54", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:28:38", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:29:10", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:29:46", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:30:05", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:30:40", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:32:00", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:32:23", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:35:10", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:35:51", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:36:12", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:36:57", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:37:30", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:38:10", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:38:40", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:39:09", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:40:00", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:40:15", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:40:42", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:41:05", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:42:24", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:43:40", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:43:56", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:44:24", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:45:15", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:46:55", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:47:41", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:50:49", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:51:21", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:51:34", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:52:19", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:52:29", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:53:04", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:53:23", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:54:01", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:55:03", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:55:33", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:56:13", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 06:56:56", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:02:07", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:02:52", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:03:04", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:05:05", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:05:50", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:06:20", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:06:35", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:07:30", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:07:58", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:08:54", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:09:27", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:09:41", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:10:17", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:10:32", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:11:02", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:14:03", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:14:26", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:15:19", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:16:01", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:16:12", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:16:30", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:18:10", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:19:21", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:20:00", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:23:38", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:23:56", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:24:16", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:24:53", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:27:03", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:27:20", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:27:50", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 07:28:19", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 08:04:58", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 08:18:30", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 09:38:52", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 09:47:59", type: "Manual Abort"},
+            {ts: "2024-10-25 09:57:19", type: "Manual Abort"},
+            {ts: "2024-10-25 09:57:26", type: "Manual Abort"},
+            {ts: "2024-10-25 10:14:54", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 10:17:46", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 10:26:26", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 10:33:09", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 10:35:46", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 10:36:51", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 10:39:03", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 10:39:33", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 10:42:20", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 10:43:26", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 10:46:14", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 10:51:38", type: "Manual Abort"},
+            {ts: "2024-10-25 10:54:50", type: "Manual Abort"},
+            {ts: "2024-10-25 10:58:43", type: "Manual Abort"},
+            {ts: "2024-10-25 11:00:51", type: "Manual Abort"},
+            {ts: "2024-10-25 11:52:41", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 11:54:10", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 11:54:44", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 11:55:24", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 11:55:43", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 11:56:47", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 11:57:04", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 11:57:18", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 11:57:53", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 11:58:06", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 11:59:47", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:02:30", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:02:49", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:03:36", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:04:02", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:04:23", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:04:41", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:05:13", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:05:27", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:06:11", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:06:49", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:09:01", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:09:36", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:09:53", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:13:23", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 12:13:53", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 14:45:30", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 14:54:41", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 14:55:48", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 14:56:11", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 14:56:26", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 14:57:15", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 14:57:31", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 14:58:23", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 14:59:01", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 14:59:32", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 15:06:26", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 15:07:29", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 15:07:48", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 15:08:05", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 15:13:18", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 15:23:10", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 15:34:55", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 16:40:01", type: "Belle2 CLAWS"},
+            {ts: "2024-10-25 16:47:18", type: "Manual Abort"},
+            {ts: "2024-10-25 17:16:26", type: "Manual Abort"},
+            {ts: "2024-10-25 17:19:34", type: "Low THR VXD diamond"},
+            {ts: "2024-10-25 17:27:18", type: "Manual Abort"},
+            {ts: "2024-10-25 17:28:04", type: "Low THR VXD diamond"},
+            {ts: "2024-10-25 17:34:09", type: "Manual Abort"},
+            {ts: "2024-10-25 17:45:02", type: "Manual Abort"},
+            {ts: "2024-10-25 17:45:25", type: "Manual Abort"},
+            {ts: "2024-10-25 17:47:32", type: "Manual Abort"},
+            {ts: "2024-10-25 17:48:03", type: "Manual Abort"},
+            {ts: "2024-10-25 17:48:36", type: "Manual Abort"},
+            {ts: "2024-10-25 17:49:06", type: "Manual Abort"},
+            {ts: "2024-10-25 17:49:36", type: "Manual Abort"},
+            {ts: "2024-10-25 17:49:55", type: "Manual Abort"},
+            {ts: "2024-10-25 17:50:25", type: "Manual Abort"},
+            {ts: "2024-10-25 17:50:53", type: "Manual Abort"},
+            {ts: "2024-10-25 17:51:21", type: "Manual Abort"},
+            {ts: "2024-10-25 17:52:36", type: "Manual Abort"},
+            {ts: "2024-10-25 17:53:27", type: "Manual Abort"},
+            {ts: "2024-10-25 17:54:03", type: "Manual Abort"},
+            {ts: "2024-10-25 17:55:05", type: "Manual Abort"},
+            {ts: "2024-10-25 17:55:43", type: "Manual Abort"},
+            {ts: "2024-10-25 17:56:07", type: "Manual Abort"},
+            {ts: "2024-10-25 17:56:29", type: "Manual Abort"},
+            {ts: "2024-10-25 19:20:00", type: "Manual Abort"},
+            {ts: "2024-10-25 21:16:32", type: "Manual Abort"},
+            {ts: "2024-10-26 03:28:26", type: "High THR VXD diamond"},
+            {ts: "2024-10-26 03:51:14", type: "Manual Abort"},
+            {ts: "2024-10-26 05:19:12", type: "High THR VXD diamond"},
+            {ts: "2024-10-26 05:23:17", type: "High THR VXD diamond"},
+            {ts: "2024-10-26 06:20:50", type: "Loss Monitor"},
+            {ts: "2024-10-26 09:50:58", type: "Manual Abort"},
+            {ts: "2024-10-26 10:11:39", type: "Manual Abort"},
+            {ts: "2024-10-26 10:17:20", type: "Manual Abort"},
+            {ts: "2024-10-26 16:37:23", type: "Belle2 CLAWS"},
+            {ts: "2024-10-26 20:37:50", type: "Belle2 CLAWS"},
+            {ts: "2024-10-26 23:49:07", type: "Belle2 CLAWS"},
+            {ts: "2024-10-27 00:23:25", type: "Belle2 CLAWS"},
+            {ts: "2024-10-27 01:34:08", type: "Loss Monitor"},
+            {ts: "2024-10-27 02:02:01", type: "Belle2 CLAWS"},
+            {ts: "2024-10-27 03:53:51", type: "RF"},
+            {ts: "2024-10-27 05:01:02", type: "Belle2 CLAWS"},
+            {ts: "2024-10-27 05:25:06", type: "Low THR VXD diamond"},
+            {ts: "2024-10-27 06:17:54", type: "Low THR VXD diamond"},
+            {ts: "2024-10-27 06:39:50", type: "Loss Monitor"},
+            {ts: "2024-10-27 06:55:18", type: "Low THR VXD diamond"},
+            {ts: "2024-10-27 11:52:30", type: "Loss Monitor"},
+            {ts: "2024-10-27 12:32:31", type: "Loss Monitor"},
+            {ts: "2024-10-27 13:43:54", type: "High THR VXD diamond"},
+            {ts: "2024-10-27 14:32:58", type: "Belle2 CLAWS"},
+            {ts: "2024-10-27 15:10:11", type: "Loss Monitor"},
+            {ts: "2024-10-27 15:32:03", type: "Loss Monitor"},
+            {ts: "2024-10-27 15:59:33", type: "Belle2 CLAWS"},
+            {ts: "2024-10-27 18:20:16", type: "Belle2 CLAWS"},
+            {ts: "2024-10-27 19:12:15", type: "RF"},
+            {ts: "2024-10-27 19:49:46", type: "Loss Monitor"},
+            {ts: "2024-10-27 21:28:31", type: "High THR VXD diamond"},
+            {ts: "2024-10-27 21:55:58", type: "Belle2 CLAWS"},
+            {ts: "2024-10-27 23:44:10", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 00:03:11", type: "RF"},
+            {ts: "2024-10-28 00:14:17", type: "RF"},
+            {ts: "2024-10-28 01:51:06", type: "Belle2 CLAWS"},
+            {ts: "2024-10-28 02:06:03", type: "Loss Monitor"},
+            {ts: "2024-10-28 02:30:06", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 02:55:28", type: "Belle2 CLAWS"},
+            {ts: "2024-10-28 04:33:01", type: "Belle2 CLAWS"},
+            {ts: "2024-10-28 04:43:55", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 04:55:42", type: "Belle2 CLAWS"},
+            {ts: "2024-10-28 10:13:40", type: "RF"},
+            {ts: "2024-10-28 10:16:29", type: "Manual Abort"},
+            {ts: "2024-10-28 13:05:05", type: "Manual Abort"},
+            {ts: "2024-10-28 14:23:29", type: "Manual Abort"},
+            {ts: "2024-10-28 14:35:11", type: "Manual Abort"},
+            {ts: "2024-10-28 15:17:51", type: "Manual Abort"},
+            {ts: "2024-10-28 15:18:49", type: "Manual Abort"},
+            {ts: "2024-10-28 16:08:56", type: "Belle2 CLAWS"},
+            {ts: "2024-10-28 16:47:21", type: "Manual Abort"},
+            {ts: "2024-10-28 16:52:17", type: "Manual Abort"},
+            {ts: "2024-10-28 17:39:56", type: "Low THR VXD diamond"},
+            {ts: "2024-10-28 19:13:25", type: "Loss Monitor"},
+            {ts: "2024-10-28 21:34:19", type: "Belle2 CLAWS"},
+            {ts: "2024-10-28 21:46:05", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 21:47:37", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 21:48:03", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 22:17:39", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 22:20:45", type: "Low THR VXD diamond"},
+            {ts: "2024-10-28 22:21:22", type: "Belle2 CLAWS"},
+            {ts: "2024-10-28 22:23:17", type: "Low THR VXD diamond"},
+            {ts: "2024-10-28 22:32:49", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 22:35:01", type: "Low THR VXD diamond"},
+            {ts: "2024-10-28 22:36:38", type: "Low THR VXD diamond"},
+            {ts: "2024-10-28 22:48:03", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 22:49:46", type: "Low THR VXD diamond"},
+            {ts: "2024-10-28 22:53:54", type: "Low THR VXD diamond"},
+            {ts: "2024-10-28 22:58:08", type: "Low THR VXD diamond"},
+            {ts: "2024-10-28 23:01:56", type: "Low THR VXD diamond"},
+            {ts: "2024-10-28 23:07:38", type: "Low THR VXD diamond"},
+            {ts: "2024-10-28 23:14:55", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 23:17:11", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 23:19:08", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 23:38:18", type: "High THR VXD diamond"},
+            {ts: "2024-10-28 23:38:54", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 01:41:11", type: "Belle2 CLAWS"},
+            {ts: "2024-10-29 03:00:28", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 08:48:15", type: "Manual Abort"},
+            {ts: "2024-10-29 09:01:44", type: "Manual Abort"},
+            {ts: "2024-10-29 09:38:51", type: "Other"},
+            {ts: "2024-10-29 11:21:25", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 11:26:19", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 11:28:26", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 11:28:57", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 11:30:49", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 11:31:57", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 11:37:06", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 11:43:10", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 11:43:32", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 12:06:51", type: "Loss Monitor"},
+            {ts: "2024-10-29 12:25:12", type: "RF"},
+            {ts: "2024-10-29 12:53:23", type: "Manual Abort"},
+            {ts: "2024-10-29 12:58:17", type: "Other"},
+            {ts: "2024-10-29 14:19:30", type: "Manual Abort"},
+            {ts: "2024-10-29 14:24:11", type: "RF"},
+            {ts: "2024-10-29 15:19:34", type: "Belle2 CLAWS"},
+            {ts: "2024-10-29 15:39:45", type: "Manual Abort"},
+            {ts: "2024-10-29 15:44:04", type: "RF"},
+            {ts: "2024-10-29 17:33:22", type: "RF"},
+            {ts: "2024-10-29 17:51:50", type: "Loss Monitor"},
+            {ts: "2024-10-29 18:24:57", type: "Manual Abort"},
+            {ts: "2024-10-29 18:27:02", type: "RF"},
+            {ts: "2024-10-29 19:49:10", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:19:40", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:20:40", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:23:26", type: "Belle2 CLAWS"},
+            {ts: "2024-10-29 21:24:23", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:24:59", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:25:43", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:25:59", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:26:14", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:26:44", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:27:08", type: "Belle2 CLAWS"},
+            {ts: "2024-10-29 21:29:30", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:30:34", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:30:54", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:31:18", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:31:37", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:32:09", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:32:42", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:33:51", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:59:36", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 21:59:55", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:00:12", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:00:34", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:01:11", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:01:25", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:01:39", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:01:52", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:02:03", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:02:17", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:02:36", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:03:04", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:03:16", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:03:38", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:03:55", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:04:14", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:04:28", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:04:44", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:05:04", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:05:22", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:05:45", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:06:00", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:06:37", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:06:48", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:07:16", type: "High THR VXD diamond"},
+            {ts: "2024-10-29 22:07:40", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:08:01", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:08:39", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:08:49", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:09:07", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:09:19", type: "Low THR VXD diamond"},
+            {ts: "2024-10-29 22:59:34", type: "Belle2 CLAWS"},
+            {ts: "2024-10-29 23:49:00", type: "High THR VXD diamond"},
+            {ts: "2024-10-30 00:36:20", type: "Belle2 CLAWS"},
+            {ts: "2024-10-30 00:58:15", type: "Loss Monitor"},
+            {ts: "2024-10-30 01:12:09", type: "Loss Monitor"},
+            {ts: "2024-10-30 02:02:01", type: "Belle2 CLAWS"},
+            {ts: "2024-10-30 02:30:08", type: "High THR VXD diamond"},
+            {ts: "2024-10-30 03:49:39", type: "Loss Monitor"},
+            {ts: "2024-10-30 05:03:44", type: "RF"},
+            {ts: "2024-10-30 05:49:18", type: "Loss Monitor"},
+            {ts: "2024-10-30 06:49:58", type: "Loss Monitor"},
+            {ts: "2024-10-30 06:56:54", type: "High THR VXD diamond"},
+            {ts: "2024-10-30 08:41:40", type: "Manual Abort"},
+            {ts: "2024-10-30 08:59:36", type: "Manual Abort"},
+            {ts: "2024-10-30 18:35:40", type: "Manual Abort"},
+            {ts: "2024-10-30 18:48:12", type: "Manual Abort"},
+            {ts: "2024-10-30 19:10:12", type: "Manual Abort"},
+            {ts: "2024-10-30 22:47:57", type: "Manual Abort"},
+            {ts: "2024-10-30 23:19:36", type: "Manual Abort"},
+            {ts: "2024-10-30 23:27:07", type: "Manual Abort"},
+            {ts: "2024-10-31 03:06:31", type: "Manual Abort"},
+            {ts: "2024-10-31 04:11:47", type: "Belle2 CLAWS"},
+            {ts: "2024-10-31 07:06:24", type: "Belle2 CLAWS"},
+            {ts: "2024-10-31 07:14:02", type: "High THR VXD diamond"},
+            {ts: "2024-10-31 08:39:07", type: "RF"},
+            {ts: "2024-10-31 10:31:18", type: "Manual Abort"},
+            {ts: "2024-10-31 10:36:16", type: "Manual Abort"},
+            {ts: "2024-10-31 11:14:22", type: "Manual Abort"},
+            {ts: "2024-10-31 11:24:15", type: "Manual Abort"},
+            {ts: "2024-10-31 11:25:00", type: "Manual Abort"},
+            {ts: "2024-10-31 11:26:09", type: "Manual Abort"},
+            {ts: "2024-10-31 11:27:48", type: "Manual Abort"},
+            {ts: "2024-10-31 11:29:10", type: "Manual Abort"},
+            {ts: "2024-10-31 11:30:13", type: "Manual Abort"},
+            {ts: "2024-10-31 11:31:01", type: "Manual Abort"},
+            {ts: "2024-10-31 11:32:14", type: "Manual Abort"},
+            {ts: "2024-10-31 11:32:31", type: "Manual Abort"},
+            {ts: "2024-10-31 11:35:14", type: "Manual Abort"},
+            {ts: "2024-10-31 11:37:23", type: "Manual Abort"},
+            {ts: "2024-10-31 11:41:06", type: "Low THR VXD diamond"},
+            {ts: "2024-10-31 11:41:34", type: "Low THR VXD diamond"},
+            {ts: "2024-10-31 11:41:59", type: "Low THR VXD diamond"},
+            {ts: "2024-10-31 13:46:01", type: "RF"},
+            {ts: "2024-10-31 20:39:06", type: "Manual Abort"},
+            {ts: "2024-10-31 20:43:26", type: "Manual Abort"},
+            {ts: "2024-10-31 20:56:29", type: "Loss Monitor"},
+            {ts: "2024-10-31 20:59:56", type: "Loss Monitor"},
+            {ts: "2024-10-31 21:19:10", type: "Manual Abort"},
+            {ts: "2024-10-31 21:28:48", type: "Manual Abort"},
+            {ts: "2024-10-31 21:58:58", type: "Loss Monitor"},
+            {ts: "2024-10-31 22:27:26", type: "Manual Abort"},
+            {ts: "2024-10-31 23:22:54", type: "Manual Abort"},
+            {ts: "2024-10-31 23:31:58", type: "Loss Monitor"},
+        ];
+
+        // Abort types and success rates from document
+        const ABORT_TYPES = [
+            'Belle2 CLAWS', 'Manual Abort', 'Loss Monitor', 
+            'High THR VXD diamond', 'CLAWS D05V1', 'Low THR VXD diamond', 'RF'
+        ];
+
+        // Simulation state
+        let isRunning = false;
+        let isPaused = false;
+        let simulationTimer = null;
+        let currentStep = 0;
+        let speed = 200;
+
+        // Statistics
+        let stats = { aborts: 0, warnings: 0, missed: 0 };
+
+        // Data storage
+        let timeLabels = [];
+        let abnormalProbs = [];
+        let normalProbs = [];
+        let abortEvents = [];
+        let warningFlags = [];
+        let loggedWarnings = []; // Track which warnings have been logged
+        let pendingEvents = []; // Events pending delayed judgment (±10min window)
+
+        // Simulation parameters
+        const TOTAL_STEPS = 6000;
+        // Time range: Oct 9 00:00 to Oct 31 23:59 (23 days)
+        const START_TIME = new Date('2024-10-09T00:00:00').getTime();
+        const END_TIME = new Date('2024-10-31T23:59:59').getTime();
+        const TIME_RANGE = END_TIME - START_TIME;
+        const MS_PER_STEP = TIME_RANGE / TOTAL_STEPS;
+        // Warning check window: 10 minutes (in steps)
+        const WARNING_CHECK_WINDOW = Math.ceil((10 * 60 * 1000) / MS_PER_STEP) + 1;
+
+        // Chart instances
+        let mainChart, probChart;
+
+        // Initialize charts
+        function initCharts() {
+            const mainCtx = document.getElementById('mainChart').getContext('2d');
+            mainChart = new Chart(mainCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: 'Abnormal Prob.',
+                            data: [],
+                            borderColor: '#e94560',
+                            backgroundColor: 'rgba(233, 69, 96, 0.1)',
+                            fill: true,
+                            tension: 0.3,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        },
+                        {
+                            label: 'Normal Prob.',
+                            data: [],
+                            borderColor: '#00d9a5',
+                            backgroundColor: 'rgba(0, 217, 165, 0.1)',
+                            fill: true,
+                            tension: 0.3,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { intersect: false, mode: 'index' },
+                    plugins: {
+                        legend: { display: false },
+                        annotation: { annotations: {} }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#8892a0', maxTicksLimit: 10 }
+                        },
+                        y: {
+                            min: 0, max: 1,
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#8892a0' }
+                        }
+                    }
+                }
+            });
+
+            const probCtx = document.getElementById('probChart').getContext('2d');
+            probChart = new Chart(probCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Normal', 'Belle2 CLAWS', 'Loss Monitor', 'VXD High', 'CLAWS D05', 'VXD Low', 'RF', 'Manual'],
+                    datasets: [{
+                        data: [1, 0, 0, 0, 0, 0, 0, 0],
+                        backgroundColor: [
+                            '#00d9a5', '#e94560', '#3498db', '#9b59b6', 
+                            '#e67e22', '#1abc9c', '#f1c40f', '#95a5a6'
+                        ],
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#8892a0', font: { size: 10 } }
+                        },
+                        y: {
+                            min: 0, max: 1,
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#8892a0' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Get prediction data - using real LightGBM model predictions (backend logic)
+        function getPrediction(step) {
+            // Get current time for this step
+            const currentTime = START_TIME + step * MS_PER_STEP;
+            
+            // Find the closest prediction by timestamp
+            let closestIdx = 0;
+            let minDiff = Infinity;
+            
+            for (let i = 0; i < REAL_PREDICTIONS.length; i++) {
+                const predTime = new Date(REAL_PREDICTIONS[i].timestamp.replace(' ', 'T')).getTime();
+                const diff = Math.abs(predTime - currentTime);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestIdx = i;
+                }
+            }
+            
+            // Return complete prediction object from backend
+            return REAL_PREDICTIONS[closestIdx];
+        }
+
+        // Generate abort events from real data with exact timestamps
+        function generateAbortEvents() {
+            abortEvents = [];
+            
+            // Map real events to simulation steps based on exact timestamps
+            REAL_ABORT_EVENTS.forEach((event) => {
+                // Parse timestamp to get exact time
+                const eventTime = new Date(event.ts.replace(' ', 'T')).getTime();
+                // Calculate which step this event falls on
+                const step = Math.floor((eventTime - START_TIME) / MS_PER_STEP);
+                
+                if (step >= 0 && step < TOTAL_STEPS) {
+                    abortEvents.push({
+                        step: step,
+                        type: event.type,
+                        realTime: event.ts,
+                        willPredict: undefined
+                    });
+                }
+            });
+            
+            // Sort by step
+            abortEvents.sort((a, b) => a.step - b.step);
+        }
+
+        // Format time based on step - exact mapping to real time range
+        function getDateFromStep(step) {
+            return new Date(START_TIME + step * MS_PER_STEP);
+        }
+        
+        function formatTime(step) {
+            const date = getDateFromStep(step);
+            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        }
+
+        function formatDate(step) {
+            const date = getDateFromStep(step);
+            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        }
+        
+        function formatFullDate(step) {
+            const date = getDateFromStep(step);
+            return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+        
+        // Format for chart labels and logs (e.g., "Oct 15 14:30")
+        function formatDateTime(step) {
+            const date = getDateFromStep(step);
+            const month = date.toLocaleDateString('en-US', { month: 'short' });
+            const day = date.getDate();
+            const time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+            return `${month} ${day} ${time}`;
+        }
+
+        // Update UI (display only, no logic)
+        function updateUI(abnormalProb, alertLevel, predictedClass, step) {
+            // Time - show full date and time
+            document.getElementById('currentTime').textContent = formatDateTime(step);
+            document.getElementById('currentDate').textContent = formatFullDate(step);
+            document.getElementById('currentTimeLabel').textContent = formatDateTime(step);
+            
+            // Prediction value
+            document.getElementById('predValue').textContent = abnormalProb.toFixed(2);
+            
+            // Prediction class (from backend)
+            const predClass = document.getElementById('predClass');
+            if (alertLevel === 'danger' || alertLevel === 'warning') {
+                predClass.textContent = predictedClass;
+                predClass.className = 'pred-class abnormal';
+            } else {
+                predClass.textContent = 'Normal';
+                predClass.className = 'pred-class normal';
+            }
+            
+            // Alert status (from backend)
+            const alertStatus = document.getElementById('alertStatus');
+            if (alertLevel === 'danger') {
+                alertStatus.className = 'alert-status danger';
+                alertStatus.innerHTML = '<div class="status-dot"></div><span>Critical Warning</span>';
+            } else if (alertLevel === 'warning') {
+                alertStatus.className = 'alert-status warning';
+                alertStatus.innerHTML = '<div class="status-dot"></div><span>Warning</span>';
+            } else {
+                alertStatus.className = 'alert-status normal';
+                alertStatus.innerHTML = '<div class="status-dot"></div><span>Normal</span>';
+            }
+            
+            // Progress
+            const progress = (step / TOTAL_STEPS) * 100;
+            document.getElementById('progressFill').style.width = progress + '%';
+            
+            // Statistics
+            document.getElementById('statAborts').textContent = stats.aborts;
+            document.getElementById('statWarnings').textContent = stats.warnings;
+            document.getElementById('statMissed').textContent = stats.missed;
+            
+            if (stats.aborts > 0) {
+                const accuracy = ((stats.warnings / stats.aborts) * 100).toFixed(1) + '%';
+                document.getElementById('statAccuracy').textContent = accuracy;
+            }
+        }
+
+        // Add event log
+        function addEventLog(time, message, type) {
+            const eventList = document.getElementById('eventList');
+            const item = document.createElement('div');
+            item.className = 'event-item';
+            item.innerHTML = `
+                <div class="event-time">${time}</div>
+                <div class="event-type ${type}">${message}</div>
+            `;
+            eventList.insertBefore(item, eventList.firstChild);
+            
+            // Limit log entries
+            while (eventList.children.length > 15) {
+                eventList.removeChild(eventList.lastChild);
+            }
+        }
+
+        // Simulation step
+        function simulationStep() {
+            if (currentStep >= TOTAL_STEPS) {
+                stopSimulation();
+                addEventLog(formatDateTime(currentStep), 'Completed', 'success');
+                return;
+            }
+            
+            // Get prediction from backend (all logic done on backend)
+            const prediction = getPrediction(currentStep);
+            const abnormalProb = prediction.abnormal_prob;
+            const normalProb = prediction.normal_prob;
+            const isWarning = prediction.is_warning;
+            const alertLevel = prediction.alert_level;
+            const classProbs = prediction.class_probs;
+            
+            // Store data
+            timeLabels.push(formatDateTime(currentStep));
+            abnormalProbs.push(abnormalProb);
+            normalProbs.push(normalProb);
+            warningFlags[currentStep] = isWarning;
+            
+            // Check for warning trigger - only log when within 10 minutes of an event
+            if (isWarning && !loggedWarnings[currentStep]) {
+                loggedWarnings[currentStep] = true;
+                const currentTime = START_TIME + currentStep * MS_PER_STEP;
+                const WARNING_WINDOW = 10 * 60 * 1000;
+                
+                const relatedAbort = abortEvents.find(e => {
+                    const eventTime = new Date(e.realTime.replace(' ', 'T')).getTime();
+                    const timeDiff = Math.abs(eventTime - currentTime);
+                    return timeDiff <= WARNING_WINDOW;
+                });
+                
+                if (relatedAbort) {
+                    addEventLog(formatDateTime(currentStep), `Warning (${abnormalProb.toFixed(2)})`, 'warning');
+                }
+            }
+            
+            // Check abort events
+            const abortEvent = abortEvents.find(e => e.step === currentStep);
+            if (abortEvent) {
+                stats.aborts++;
+                
+                // Check if warning was triggered within 10 minutes BEFORE event (use backend is_warning)
+                let warned = false;
+                for (let i = Math.max(0, currentStep - WARNING_CHECK_WINDOW); i <= currentStep; i++) {
+                    if (warningFlags[i]) {
+                        warned = true;
+                        break;
+                    }
+                }
+                
+                const realTimeStr = abortEvent.realTime.substring(5, 16).replace(' ', ' ');
+                
+                if (warned) {
+                    stats.warnings++;
+                    addEventLog(realTimeStr, `[${abortEvent.type}] Success`, 'success');
+                } else {
+                    pendingEvents.push({
+                        step: currentStep,
+                        type: abortEvent.type,
+                        realTimeStr: realTimeStr,
+                        judgeStep: currentStep + WARNING_CHECK_WINDOW
+                    });
+                }
+            }
+            
+            // Check pending events for delayed judgment
+            for (let i = pendingEvents.length - 1; i >= 0; i--) {
+                const pending = pendingEvents[i];
+                if (currentStep >= pending.judgeStep) {
+                    let warned = false;
+                    for (let j = pending.step; j <= Math.min(currentStep, pending.step + WARNING_CHECK_WINDOW); j++) {
+                        if (warningFlags[j]) {
+                            warned = true;
+                            break;
+                        }
+                    }
+                    
+                    if (warned) {
+                        stats.warnings++;
+                        addEventLog(pending.realTimeStr, `[${pending.type}] Success`, 'success');
+                    } else {
+                        stats.missed++;
+                        addEventLog(pending.realTimeStr, `[${pending.type}] Missed`, 'abort');
+                    }
+                    
+                    pendingEvents.splice(i, 1);
+                }
+            }
+            
+            // Update charts and UI (display only, no logic)
+            updateCharts(abnormalProb, classProbs);
+            updateUI(abnormalProb, alertLevel, prediction.predicted_class, currentStep);
+            
+            currentStep++;
+        }
+
+        // Update charts (display only)
+        function updateCharts(abnormalProb, classProbs) {
+            const maxPoints = 100;
+            const startIdx = Math.max(0, timeLabels.length - maxPoints);
+            
+            mainChart.data.labels = timeLabels.slice(startIdx);
+            mainChart.data.datasets[0].data = abnormalProbs.slice(startIdx);
+            mainChart.data.datasets[1].data = normalProbs.slice(startIdx);
+            mainChart.update('none');
+            
+            probChart.data.datasets[0].data = classProbs;
+            probChart.update('none');
+        }
+
+        // Control functions
+        function startSimulation() {
+            if (currentStep === 0) {
+                generateAbortEvents();
+            }
+            
+            isRunning = true;
+            isPaused = false;
+            
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('pauseBtn').disabled = false;
+            
+            addEventLog(formatDateTime(currentStep), 'Started', 'success');
+            
+            simulationTimer = setInterval(simulationStep, speed);
+        }
+
+        function pauseSimulation() {
+            if (isPaused) {
+                isPaused = false;
+                document.getElementById('pauseBtn').innerHTML = '⏸ Pause';
+                simulationTimer = setInterval(simulationStep, speed);
+            } else {
+                isPaused = true;
+                document.getElementById('pauseBtn').innerHTML = '▶ Resume';
+                clearInterval(simulationTimer);
+            }
+        }
+
+        function stopSimulation() {
+            isRunning = false;
+            clearInterval(simulationTimer);
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('pauseBtn').disabled = true;
+        }
+
+        function resetSimulation() {
+            stopSimulation();
+            currentStep = 0;
+            stats = { aborts: 0, warnings: 0, missed: 0 };
+            timeLabels = [];
+            abnormalProbs = [];
+            normalProbs = [];
+            warningFlags = [];
+            loggedWarnings = [];
+            pendingEvents = [];
+            
+            mainChart.data.labels = [];
+            mainChart.data.datasets[0].data = [];
+            mainChart.data.datasets[1].data = [];
+            mainChart.update();
+            
+            probChart.data.datasets[0].data = [1, 0, 0, 0, 0, 0, 0, 0];
+            probChart.update();
+            
+            document.getElementById('predValue').textContent = '0.00';
+            document.getElementById('predClass').className = 'pred-class normal';
+            document.getElementById('predClass').textContent = 'Normal';
+            document.getElementById('alertStatus').className = 'alert-status normal';
+            document.getElementById('alertStatus').innerHTML = '<div class="status-dot"></div><span>Normal</span>';
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('currentTime').textContent = '00:00:00';
+            document.getElementById('statAborts').textContent = '0';
+            document.getElementById('statWarnings').textContent = '0';
+            document.getElementById('statMissed').textContent = '0';
+            document.getElementById('statAccuracy').textContent = '--';
+            
+            document.getElementById('eventList').innerHTML = `
+                <div class="event-item">
+                    <div class="event-time">System Reset</div>
+                    <div class="event-type">Waiting...</div>
+                </div>
+            `;
+            
+            document.getElementById('startBtn').innerHTML = '▶ Start';
+            document.getElementById('pauseBtn').innerHTML = '⏸ Pause';
+        }
+
+        function changeSpeed() {
+            speed = parseInt(document.getElementById('speedSelect').value);
+            if (isRunning && !isPaused) {
+                clearInterval(simulationTimer);
+                simulationTimer = setInterval(simulationStep, speed);
+            }
+        }
+
+        // Load data from API
+        // Real predictions from LightGBM model
+        let REAL_PREDICTIONS = [];
+        let CLASS_LABELS = ['Normal', 'Belle2 CLAWS', 'Belle2 VXD diamond', 'CLAWS D05V1', 
+                           'High THR VXD diamond', 'Loss Monitor', 'Low THR VXD diamond', 
+                           'Manual Abort', 'RF'];
+        let predictionsLoaded = false;
+
+        async function loadDataFromAPI() {
+            // Load abort events
+            const eventsResponse = await fetch('/api/abort-events');
+            const eventsData = await eventsResponse.json();
+            
+            if (eventsData.status === 'success') {
+                // Update REAL_ABORT_EVENTS with API data
+                REAL_ABORT_EVENTS.length = 0;
+                eventsData.events.forEach(e => {
+                    REAL_ABORT_EVENTS.push({
+                        ts: e.timestamp,
+                        type: e.type
+                    });
+                });
+                console.log(`Loaded ${eventsData.count} abort events from API`);
+            }
+            
+            // Load sensor data info
+            const sensorResponse = await fetch('/api/sensor-data');
+            const sensorData = await sensorResponse.json();
+            
+            if (sensorData.status === 'success') {
+                document.getElementById('sensorCount').textContent = 
+                    `${sensorData.stats.total_sensors} Active`;
+                console.log(`Loaded ${sensorData.stats.total_sensors} sensors from API`);
+            }
+            
+            // Load real predictions from LightGBM model
+            const predictResponse = await fetch('/api/predictions');
+            const predictData = await predictResponse.json();
+            
+            if (predictData.status === 'success') {
+                REAL_PREDICTIONS = predictData.predictions;
+                if (predictData.class_labels) {
+                    CLASS_LABELS = predictData.class_labels;
+                }
+                predictionsLoaded = true;
+                console.log(`Loaded ${predictData.count} real predictions from LightGBM model`);
+            } else {
+                console.error('Failed to load predictions from API');
+            }
+        }
+
+        // Initialize
+        window.onload = async function() {
+            await loadDataFromAPI();
+            initCharts();
+        };
+    </script>
+</body>
+</html>

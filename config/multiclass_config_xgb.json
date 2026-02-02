@@ -1,0 +1,33 @@
+{
+  "_说明": "XGBoost多分类模型训练配置",
+  
+  "seed": 42,
+  "test_size": 0.15,
+  "data_dir": "dataset/Abnormal",
+  "output_dir": "artifacts/xgboost/multiclass",
+  
+  "multiclass_params": {
+    "_说明": "XGBoost多分类参数",
+    "objective": "multi:softprob",
+    "n_estimators": 3000,
+    "learning_rate": 0.005,
+    "max_depth": 10,
+    "min_child_weight": 1,
+    "subsample": 0.6,
+    "colsample_bytree": 0.6,
+    "reg_alpha": 0.2,
+    "reg_lambda": 0.2,
+    "tree_method": "hist",
+    "eval_metric": "mlogloss"
+  },
+  
+  "sampling": {
+    "_说明": "采样配置",
+    "mode": "window",
+    "window_sec": 600.0,
+    "step_sec": 180.0,
+    "min_points": 15,
+    "max_windows_per_file": 15,
+    "num_workers": 12
+  }
+}

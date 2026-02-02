@@ -1,0 +1,31 @@
+{
+  "_说明": "Random Forest多分类模型训练配置",
+  
+  "seed": 42,
+  "test_size": 0.15,
+  "data_dir": "dataset/Abnormal",
+  "output_dir": "artifacts/random_forest/multiclass",
+  
+  "multiclass_params": {
+    "_说明": "Random Forest多分类参数",
+    "n_estimators": 500,
+    "max_depth": 15,
+    "min_samples_split": 5,
+    "min_samples_leaf": 2,
+    "max_features": "sqrt",
+    "bootstrap": true,
+    "oob_score": true,
+    "class_weight": "balanced",
+    "n_jobs": -1
+  },
+  
+  "sampling": {
+    "_说明": "采样配置",
+    "mode": "window",
+    "window_sec": 600.0,
+    "step_sec": 180.0,
+    "min_points": 15,
+    "max_windows_per_file": 15,
+    "num_workers": 12
+  }
+}

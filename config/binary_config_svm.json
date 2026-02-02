@@ -1,0 +1,36 @@
+{
+  "_说明": "SVM二分类模型训练配置",
+  
+  "seed": 42,
+  "test_size": 0.15,
+  "data_dir": "dataset",
+  "output_dir": "artifacts/svm/binary",
+  
+  "binary_params": {
+    "_说明": "SVM二分类参数",
+    "kernel": "rbf",
+    "C": 1.0,
+    "gamma": "scale",
+    "probability": true,
+    "max_iter": 10000
+  },
+  
+  "training": {
+    "_说明": "训练策略配置",
+    "balance_strategy": "undersample_1to1",
+    "use_feature_interactions": true,
+    "use_scaling": true,
+    "_use_scaling说明": "SVM需要特征缩放",
+    "target_dual_accuracy": 0.90
+  },
+  
+  "sampling": {
+    "_说明": "采样配置",
+    "mode": "window",
+    "window_sec": 120.0,
+    "step_sec": 90.0,
+    "min_points": 10,
+    "max_windows_per_file": 20,
+    "num_workers": 12
+  }
+}
