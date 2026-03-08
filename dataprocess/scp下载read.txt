@@ -1,0 +1,42 @@
+3. 避免 scp -J 直接连跳，改用手动转发（更稳定）
+如果 scp -J 连跳语法有兼容性问题（部分老版本 SSH 不支持 -J 参数），可改用手动端口转发：
+步骤 1：建立本地到目标机的端口转发
+在本地命令行（如 Git Bash 或 PowerShell）中执行：
+
+bash
+# 将本地 2222 端口转发到目标机的 22 端口（通过跳板机）
+ssh -L 2222:login.cc.kek.jp:22 liuyu@sshcc1.kek.jp
+Sandian1415926!
+
+
+执行后会要求输入跳板机密码，成功后会保持连接（不要关闭窗口）。
+步骤 2：通过转发端口下载文件
+新开一个命令行窗口，使用转发的本地端口 2222 连接目标机：
+scp -P 2222 "E:\danzi\deguo\lightGBM-2\lightgbm_system.py" liuyu@localhost:/ghi/fs01/belle2/bdata/users/liuyu/_1223
+
+bash
+# 通过本地 2222 端口下载文件（映射到目标机 22 端口）
+scp -P 2222 liuyu@localhost:/home/belle2/liuyu/YuLiu/data/BT_BTDENV_DR_WATER/BT_BTDENV_DR_WATER_data_20250814_174229.tar.gz F:\work\data
+scp -P 2222 liuyu@localhost:/gpfs/group/belle2/group/accelerator/pv/2024/AA_tsv/BT_BTpPS_QAD5P_IMON_2024.tsv F:\danzi\lightGBM
+scp -P 2222 F:\danzi\lightGBM\build_dataset.py liuyu@localhost:/ghi/fs01/belle2/bdata/users/liuyu/_0204
+scp -P 2222 liuyu@localhost:/ghi/fs01/belle2/bdata/users/liuyu/_0204/dataset.zip F:\danzi\lightGBM\
+
+
+此时会要求输入目标机的密码（因为 localhost:2222 已映射到目标机）。
+scp -P 2222 F:\work\aborts_adjusted.json liuyu@localhost:/ghi/fs01/belle2/bdata/users/liuyu
+
+
+setx ANTHROPIC_AUTH_TOKEN "ck_c649f30f378a17b704cacb157b24173b"
+
+ssh -L 3456:localhost:3456 Liu.Yu@gar-cn-etp01.garching.physik.uni-muenchen.de
+export MAMBA_ROOT_PREFIX=/project/agkuhr/users/YuLiu/micromamba
+eval "$(/project/agkuhr/users/YuLiu/micromamba/bin/micromamba shell hook -s posix)"
+micromamba activate hyper
+cd /project/agkuhr/users/YuLiu
+jupyter lab --no-browser --port=3456
+
+ssh -L 3456:localhost:3456 Liu.Yu@gar-cn-etp01.garching.physik.uni-muenchen.de
+
+setx ANTHROPIC_BASE_URL "https://api.claudecode.uk"
+setx ANTHROPIC_AUTH_TOKEN "ck_79289dc0855d146aac919704ed8cdb08"
+

@@ -5,6 +5,7 @@
 """
 import argparse
 import json
+import hashlib
 import logging
 import os
 import pickle
@@ -29,11 +30,15 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from matplotlib import font_manager, rcParams
+from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
+    brier_score_loss,
     classification_report,
     confusion_matrix,
     f1_score,
+    log_loss,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -209,6 +214,9 @@ def load_config(path: str | None) -> tuple[int, float, dict, dict, dict, str, st
         "focal_gamma": 2.0,
         "use_feature_interactions": True,
         "target_dual_accuracy": 0.90,
+        "use_pv_hash_bucket": False,
+        "pv_hash_bucket_size": 4096,
+        "pv_hash_salt": "pv_hash_v1",
     }
     data_dir = "test-datasets"
     output_dir = "artifacts/binary"
@@ -274,7 +282,15 @@ def find_parquet_files(base_dir: str, verbose: bool = False) -> list[tuple[str, 
     return results
 
 
-def extract_features_from_series(values: pd.Series, epochs: pd.Series) -> dict:
+def stable_hash_bucket(text: str, bucket_size: int, salt: str) -> int:
+    raw = f"{salt}|{text}".encode("utf-8", errors="ignore")
+    digest = hashlib.md5(raw).digest()
+    v = int.from_bytes(digest[:8], byteorder="little", signed=False)
+    k = int(bucket_size)
+    return int(v % k) if k > 0 else 0
+
+
+def extract_features_from_series(values: pd.Series, epochs: pd.Series, use_fft_features: bool = True) -> dict:
     """从时序数据中提取统计特征（增强版）"""
     v = values.values.astype(np.float64)  # 使用 numpy 数组加速
     feats: dict[str, float] = {}
@@ -492,7 +508,7 @@ def extract_features_from_series(values: pd.Series, epochs: pd.Series) -> dict:
             feats["entropy"] = 0.0
         
         # ========== 新增特征: 频域特征 (FFT) ==========
-        if n >= 8:
+        if use_fft_features and n >= 8:
             try:
                 # 计算 FFT
                 fft_vals = np.fft.rfft(v_valid - mean_val)
@@ -617,12 +633,13 @@ def generate_window_records(
     label: str,
     path: str,
     sampling_config: dict,
+    use_fft_features: bool = True,
 ) -> list[dict]:
     """生成滑动窗口特征记录"""
     if "epoch_ms" not in df.columns or "value" not in df.columns:
         return []
     
-    df_sorted = df.sort_values("epoch_ms")
+    df_sorted = df
     epochs = df_sorted["epoch_ms"].astype("int64").to_numpy()
     if epochs.size == 0:
         return []
@@ -654,7 +671,7 @@ def generate_window_records(
         
         if idx_end - idx_start >= min_points:
             sub = df_sorted.iloc[idx_start:idx_end]
-            feats = extract_features_from_series(sub["value"], sub["epoch_ms"])
+            feats = extract_features_from_series(sub["value"], sub["epoch_ms"], use_fft_features=use_fft_features)
             feats["file_path"] = path
             if "pv_name" in sub.columns:
                 try:
@@ -676,6 +693,7 @@ def generate_window_records(
 def build_feature_table(
     base_dir: str,
     sampling_config: dict,
+    training_config: dict,
 ) -> tuple[pd.DataFrame, pd.Series, list[str], pd.Series]:
     """构建特征表"""
     log_subsection("数据扫描")
@@ -702,6 +720,7 @@ def build_feature_table(
     logging.info("  待处理文件: %d 个", total_files)
     
     start_time = time.time()
+    use_fft_features = bool(training_config.get("use_fft_features", True))
     records: list[dict] = []
     processed_files = [0]
     skipped_files = [0]
@@ -729,9 +748,9 @@ def build_feature_table(
             return []
         
         if mode == "window":
-            result = generate_window_records(df, label, path, sampling_config)
+            result = generate_window_records(df, label, path, sampling_config, use_fft_features=use_fft_features)
         else:
-            feats = extract_features_from_series(df["value"], df["epoch_ms"])
+            feats = extract_features_from_series(df["value"], df["epoch_ms"], use_fft_features=use_fft_features)
             feats["file_path"] = path
             if "pv_name" in df.columns:
                 try:
@@ -784,13 +803,44 @@ def build_feature_table(
     table = pd.DataFrame(records)
     del records
     gc.collect()
+
+    if bool(training_config.get("use_pv_hash_bucket", False)) and "pv_name" in table.columns:
+        bucket_size = int(training_config.get("pv_hash_bucket_size", 2048))
+        salt = str(training_config.get("pv_hash_salt", "pv_hash_v1"))
+        pv_raw = table["pv_name"].fillna("").astype(str)
+        pv_unique = pv_raw.unique()
+        pv_map = {name: stable_hash_bucket(name, bucket_size=bucket_size, salt=salt) for name in pv_unique}
+        table["pv_bucket"] = pv_raw.map(pv_map).astype(np.int32).astype("category")
+        logging.info("  PV Hash Bucket: 开启 | K=%d | 唯一PV=%d", bucket_size, len(pv_unique))
+
+    meta_cols = {"file_path", "pv_name", "window_start_epoch_ms", "window_end_epoch_ms", "label"}
+    numeric_cols = table.select_dtypes(include=[np.number]).columns.tolist()
+    base_cols = [c for c in numeric_cols if c not in meta_cols]
+    if base_cols:
+        sort_cols = ["file_path"]
+        group_cols = ["file_path"]
+        if "pv_name" in table.columns:
+            sort_cols = ["file_path", "pv_name"]
+            group_cols = ["file_path", "pv_name"]
+        if "window_start_epoch_ms" in table.columns:
+            sort_cols = sort_cols + ["window_start_epoch_ms"]
+        table = table.sort_values(sort_cols, kind="mergesort")
+        delta_df = table.groupby(group_cols, sort=False)[base_cols].diff().fillna(0.0)
+        delta_df.columns = [f"delta_{c}" for c in base_cols]
+        table = pd.concat([table, delta_df.astype(np.float32)], axis=1)
     
     feature_cols = [
         c for c in table.columns
         if c not in ["file_path", "pv_name", "window_start_epoch_ms", "window_end_epoch_ms", "label"]
     ]
     
-    X = table[feature_cols].astype(np.float32)
+    X = table[feature_cols].copy()
+    if "pv_bucket" in X.columns:
+        num_cols = [c for c in X.columns if c != "pv_bucket"]
+        if num_cols:
+            X[num_cols] = X[num_cols].astype(np.float32)
+    else:
+        X = X.astype(np.float32)
     y = table["label"].astype(np.int8)
     file_paths = table["file_path"].reset_index(drop=True)
     
@@ -920,7 +970,9 @@ def add_feature_interactions(X: pd.DataFrame) -> pd.DataFrame:
         X_new['composite_anomaly_score'] = sum(anomaly_indicators) / len(anomaly_indicators)
     
     # 清理无效值
-    X_new = X_new.replace([np.inf, -np.inf], 0).fillna(0)
+    num_cols = X_new.select_dtypes(include=[np.number]).columns
+    if len(num_cols) > 0:
+        X_new[num_cols] = X_new[num_cols].replace([np.inf, -np.inf], 0).fillna(0)
     
     return X_new
 
@@ -996,6 +1048,16 @@ def train_model(
     use_hard_mining = training_config.get("use_hard_mining", False)
     hard_mining_rounds = training_config.get("hard_mining_rounds", 2)
     hard_margin = training_config.get("hard_margin", 0.3)  # 边界样本阈值
+
+    pv_hash_bundle = None
+    if bool(training_config.get("use_pv_hash_bucket", False)) and "pv_bucket" in X.columns:
+        pv_hash_bundle = {
+            "type": "hash_bucket",
+            "feature": "pv_bucket",
+            "bucket_size": int(training_config.get("pv_hash_bucket_size", 2048)),
+            "salt": str(training_config.get("pv_hash_salt", "pv_hash_v1")),
+        }
+        logging.info("  PV Hash Bucket: %s", f"K={pv_hash_bundle['bucket_size']} feature=pv_bucket")
     
     logging.info("  平衡策略: %s", balance_strategy)
     logging.info("  Focal Loss: %s (gamma=%.1f)", use_focal_loss, focal_gamma)
@@ -1540,6 +1602,13 @@ def train_model(
             "file_name": file_name
         })
     metrics["top10_influential_files"] = top10_influential
+
+    if pv_hash_bundle is not None:
+        metrics["pv_hash"] = pv_hash_bundle
+        try:
+            setattr(model, "pv_hash_", pv_hash_bundle)
+        except Exception:
+            pass
     
     return model, metrics, X_valid, y_valid, paths_valid
 
@@ -1851,6 +1920,257 @@ def save_metrics_and_plots(metrics: dict, output_dir: str) -> None:
             logging.info("  ROC曲线(%s): %s", lang.upper(), fig_path)
 
 
+def save_binary_visualizations(
+    model,
+    X_valid: pd.DataFrame,
+    y_valid: pd.Series,
+    output_dir: str,
+    optimal_threshold: float,
+) -> None:
+    os.makedirs(output_dir, exist_ok=True)
+    setup_chinese_font()
+
+    y_true = y_valid.values.astype(int)
+    y_proba = model.predict_proba(X_valid)[:, 1].astype(float)
+    y_pred_opt = (y_proba >= float(optimal_threshold)).astype(int)
+
+    def save_placeholder(base_name: str, title_zh: str, title_en: str) -> None:
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(5, 4))
+            ax.axis("off")
+            ax.text(0.5, 0.5, "不可用" if lang == "zh" else "N/A", ha="center", va="center", fontsize=14)
+            ax.set_title(title_zh if lang == "zh" else title_en)
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"{base_name}_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+
+    try:
+        evals_result = None
+        if hasattr(model, "evals_result_"):
+            evals_result = getattr(model, "evals_result_", None)
+        elif isinstance(model, EnsembleLGBMClassifier):
+            for m in model.models:
+                if hasattr(m, "evals_result_"):
+                    evals_result = getattr(m, "evals_result_", None)
+                    break
+        metric_series = None
+        metric_name = None
+        if isinstance(evals_result, dict):
+            key0 = next(iter(evals_result.keys()))
+            metric0 = next(iter(evals_result[key0].keys()))
+            metric_series = np.asarray(evals_result[key0][metric0], dtype=float)
+            metric_name = str(metric0)
+        if metric_series is not None and metric_series.size > 1:
+            x = np.arange(1, metric_series.size + 1)
+            for lang in ("zh", "en"):
+                fig, ax = plt.subplots(figsize=(6.2, 4.2))
+                ax.plot(x, metric_series, label=metric_name or "loss")
+                ax.set_xlabel("迭代轮数" if lang == "zh" else "Iteration")
+                ax.set_ylabel("损失" if lang == "zh" else "Loss")
+                ax.set_title(("损失曲线" if lang == "zh" else "Loss Curve") + f" ({'LightGBM' if lang=='en' else 'LightGBM'})")
+                ax.legend()
+                plt.tight_layout()
+                fig_path = os.path.join(output_dir, f"loss_curve_{lang}.png")
+                plt.savefig(fig_path, dpi=150)
+                plt.close(fig)
+        else:
+            raise RuntimeError("no evals")
+    except Exception:
+        try:
+            ll = float(log_loss(y_true, y_proba, eps=1e-15))
+            for lang in ("zh", "en"):
+                fig, ax = plt.subplots(figsize=(6.2, 4.2))
+                ax.plot([1], [ll], marker="o")
+                ax.set_xlabel("迭代轮数" if lang == "zh" else "Iteration")
+                ax.set_ylabel("损失" if lang == "zh" else "Loss")
+                ax.set_title(("损失曲线" if lang == "zh" else "Loss Curve") + " (LightGBM)")
+                plt.tight_layout()
+                fig_path = os.path.join(output_dir, f"loss_curve_{lang}.png")
+                plt.savefig(fig_path, dpi=150)
+                plt.close(fig)
+        except Exception:
+            save_placeholder("loss_curve", "损失曲线（LightGBM）", "Loss Curve (LightGBM)")
+
+    cm = confusion_matrix(y_true, y_pred_opt, labels=[0, 1])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cm_pct = cm.astype(float) / cm.sum(axis=1, keepdims=True) * 100
+    cm_pct = np.nan_to_num(cm_pct, nan=0.0, posinf=0.0, neginf=0.0)
+    for lang in ("zh", "en"):
+        fig, ax = plt.subplots(figsize=(4.6, 4.2))
+        labels = ["正常", "异常"] if lang == "zh" else ["Normal", "Abnormal"]
+        title = "二分类混淆矩阵(%)" if lang == "zh" else "Binary Confusion Matrix (%)"
+        sns.heatmap(
+            cm_pct,
+            annot=True,
+            fmt=".1f",
+            cmap="Blues",
+            cbar=False,
+            ax=ax,
+            xticklabels=labels,
+            yticklabels=labels,
+            annot_kws={"size": 12},
+        )
+        for t in ax.texts:
+            t.set_text(t.get_text() + "%")
+        ax.set_xlabel("预测类别" if lang == "zh" else "Predicted")
+        ax.set_ylabel("真实类别" if lang == "zh" else "True")
+        ax.set_title(title + (f"\n阈值={optimal_threshold:.2f}" if lang == "zh" else f"\nThreshold={optimal_threshold:.2f}"))
+        plt.tight_layout()
+        fig_path = os.path.join(output_dir, f"confusion_percent_{lang}.png")
+        plt.savefig(fig_path, dpi=150)
+        plt.close(fig)
+
+    try:
+        fpr, tpr, _ = roc_curve(y_true, y_proba)
+        auc_val = roc_auc_score(y_true, y_proba)
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(4.6, 4.2))
+            ax.plot(fpr, tpr, label=f"AUC={auc_val:.4f}")
+            ax.plot([0, 1], [0, 1], "k--", label=("随机" if lang == "zh" else "Random"))
+            ax.set_xlabel("假阳性率" if lang == "zh" else "False Positive Rate")
+            ax.set_ylabel("真阳性率" if lang == "zh" else "True Positive Rate")
+            ax.set_title(("ROC 曲线" if lang == "zh" else "ROC Curve") + " (LightGBM)")
+            ax.legend()
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"roc_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("roc", "ROC 曲线（LightGBM）", "ROC Curve (LightGBM)")
+
+    try:
+        prec, rec, _ = precision_recall_curve(y_true, y_proba)
+        ap = average_precision_score(y_true, y_proba)
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(4.6, 4.2))
+            ax.plot(rec, prec, label=f"AP={ap:.4f}")
+            ax.set_xlabel("召回率" if lang == "zh" else "Recall")
+            ax.set_ylabel("精确率" if lang == "zh" else "Precision")
+            ax.set_title(("PR 曲线" if lang == "zh" else "PR Curve") + " (LightGBM)")
+            ax.legend()
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"pr_curve_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("pr_curve", "PR 曲线（LightGBM）", "PR Curve (LightGBM)")
+
+    try:
+        prob_true, prob_pred = calibration_curve(y_true, y_proba, n_bins=10, strategy="uniform")
+        brier = brier_score_loss(y_true, y_proba)
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(4.6, 4.2))
+            ax.plot([0, 1], [0, 1], "k--", label=("理想校准" if lang == "zh" else "Perfect"))
+            ax.plot(prob_pred, prob_true, marker="o", label=f"Brier={brier:.4f}")
+            ax.set_xlabel("预测概率" if lang == "zh" else "Predicted Probability")
+            ax.set_ylabel("真实正例比例" if lang == "zh" else "Fraction of Positives")
+            ax.set_title(("校准曲线" if lang == "zh" else "Calibration Curve") + " (LightGBM)")
+            ax.legend()
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"calibration_curve_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("calibration_curve", "校准曲线（LightGBM）", "Calibration Curve (LightGBM)")
+
+    for lang in ("zh", "en"):
+        fig, ax = plt.subplots(figsize=(5.6, 4.2))
+        ax.hist(y_proba[y_true == 0], bins=40, alpha=0.6, label=("正常" if lang == "zh" else "Normal"))
+        ax.hist(y_proba[y_true == 1], bins=40, alpha=0.6, label=("异常" if lang == "zh" else "Abnormal"))
+        ax.axvline(float(optimal_threshold), color="k", linestyle="--", linewidth=1)
+        ax.set_xlabel("预测为异常的概率" if lang == "zh" else "Predicted Abnormal Probability")
+        ax.set_ylabel("样本数" if lang == "zh" else "Count")
+        ax.set_title(("预测分数分布" if lang == "zh" else "Prediction Score Distribution") + " (LightGBM)")
+        ax.legend()
+        plt.tight_layout()
+        fig_path = os.path.join(output_dir, f"score_distribution_{lang}.png")
+        plt.savefig(fig_path, dpi=150)
+        plt.close(fig)
+
+    thresholds = np.linspace(0.0, 1.0, 201)
+    precision_list = []
+    recall_list = []
+    specificity_list = []
+    f1_list = []
+    accuracy_list = []
+    for thr in thresholds:
+        y_pred = (y_proba >= thr).astype(int)
+        tn = int(np.sum((y_true == 0) & (y_pred == 0)))
+        fp = int(np.sum((y_true == 0) & (y_pred == 1)))
+        fn = int(np.sum((y_true == 1) & (y_pred == 0)))
+        tp = int(np.sum((y_true == 1) & (y_pred == 1)))
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        accuracy = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0.0
+        precision_list.append(precision)
+        recall_list.append(recall)
+        specificity_list.append(specificity)
+        f1_list.append(f1)
+        accuracy_list.append(accuracy)
+
+    for lang in ("zh", "en"):
+        fig, ax = plt.subplots(figsize=(6.2, 4.2))
+        ax.plot(thresholds, accuracy_list, label=("准确率" if lang == "zh" else "Accuracy"))
+        ax.plot(thresholds, precision_list, label=("精确率" if lang == "zh" else "Precision"))
+        ax.plot(thresholds, recall_list, label=("召回率" if lang == "zh" else "Recall"))
+        ax.plot(thresholds, specificity_list, label=("特异度" if lang == "zh" else "Specificity"))
+        ax.plot(thresholds, f1_list, label=("F1" if lang == "zh" else "F1"))
+        ax.axvline(float(optimal_threshold), color="k", linestyle="--", linewidth=1)
+        ax.set_xlabel("阈值" if lang == "zh" else "Threshold")
+        ax.set_ylabel("指标值" if lang == "zh" else "Metric")
+        ax.set_title(("阈值对比曲线" if lang == "zh" else "Metrics vs Threshold") + " (LightGBM)")
+        ax.legend(ncol=3, fontsize=9)
+        plt.tight_layout()
+        fig_path = os.path.join(output_dir, f"threshold_curve_{lang}.png")
+        plt.savefig(fig_path, dpi=150)
+        plt.close(fig)
+
+    summary = {}
+    summary["threshold_optimal"] = float(optimal_threshold)
+    summary["accuracy_opt"] = float(accuracy_score(y_true, y_pred_opt))
+    summary["precision_opt"] = float(precision_score(y_true, y_pred_opt, zero_division=0))
+    summary["recall_opt"] = float(recall_score(y_true, y_pred_opt, zero_division=0))
+    summary["f1_opt"] = float(f1_score(y_true, y_pred_opt, zero_division=0))
+    try:
+        summary["roc_auc"] = float(roc_auc_score(y_true, y_proba))
+    except Exception:
+        summary["roc_auc"] = float("nan")
+    try:
+        summary["ap"] = float(average_precision_score(y_true, y_proba))
+    except Exception:
+        summary["ap"] = float("nan")
+    try:
+        summary["logloss"] = float(log_loss(y_true, y_proba, eps=1e-15))
+    except Exception:
+        summary["logloss"] = float("nan")
+    try:
+        summary["brier"] = float(brier_score_loss(y_true, y_proba))
+    except Exception:
+        summary["brier"] = float("nan")
+
+    keys = ["threshold_optimal", "accuracy_opt", "precision_opt", "recall_opt", "f1_opt", "roc_auc", "ap", "logloss", "brier"]
+    for lang in ("zh", "en"):
+        fig, ax = plt.subplots(figsize=(6.2, 2.8))
+        ax.axis("off")
+        rows = []
+        for k in keys:
+            v = summary.get(k, float("nan"))
+            rows.append([k, f"{v:.6f}" if isinstance(v, float) else str(v)])
+        col_labels = ["指标", "数值"] if lang == "zh" else ["Metric", "Value"]
+        table = ax.table(cellText=rows, colLabels=col_labels, cellLoc="left", loc="center")
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+        table.scale(1, 1.3)
+        ax.set_title(("二分类指标汇总" if lang == "zh" else "Binary Metrics Summary") + " (LightGBM)")
+        plt.tight_layout()
+        fig_path = os.path.join(output_dir, f"metrics_summary_{lang}.png")
+        plt.savefig(fig_path, dpi=150)
+        plt.close(fig)
+
+
 def save_model(
     model: lgb.LGBMClassifier,
     feature_names: list[str],
@@ -1862,6 +2182,8 @@ def save_model(
     log_subsection("保存模型文件")
     os.makedirs(output_dir, exist_ok=True)
     
+    pv_hash = getattr(model, "pv_hash_", None)
+
     bundle = {
         "model": model,
         "feature_names": feature_names,
@@ -1869,6 +2191,7 @@ def save_model(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "seed": seed,
         "sampling_config": sampling_config,
+        "pv_hash": pv_hash,
     }
     
     path = os.path.join(output_dir, "binary_model.pkl")
@@ -1883,6 +2206,7 @@ def save_model(
             "feature_names": feature_names,
             "label_mapping": bundle["label_mapping"],
             "created_at": bundle["created_at"],
+            "pv_hash": pv_hash,
         }, f, ensure_ascii=False, indent=2)
     logging.info("  元信息: %s", meta_path)
     
@@ -1912,7 +2236,7 @@ def run_training(
     logging.info("  平衡策略: %s", training_config.get("balance_strategy", "undersample_1to1"))
     logging.info("  目标双类准确率: %.0f%%", training_config.get("target_dual_accuracy", 0.90) * 100)
     
-    X, y, feature_names, file_paths = build_feature_table(data_dir, sampling_config)
+    X, y, feature_names, file_paths = build_feature_table(data_dir, sampling_config, training_config)
     
     model, metrics, X_valid, y_valid, paths_valid = train_model(
         X, y, test_size, seed, binary_params, training_config, file_paths
@@ -1926,6 +2250,8 @@ def run_training(
     optimal_threshold, optimized_metrics = optimize_threshold_and_report(
         model, X_valid, y_valid, reports_dir, target_accuracy=target_accuracy
     )
+
+    save_binary_visualizations(model, X_valid, y_valid, reports_dir, optimal_threshold)
     
     # 保存优化后的指标
     optimized_metrics_path = os.path.join(reports_dir, "metrics_binary_optimized.json")

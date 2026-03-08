@@ -1,353 +1,470 @@
 #!/usr/bin/env python3
-"""
-数据集构建工具 - 最终版
-特性：分批处理、极低内存、断点续传、多进程并行
-
-处理流程：
-1. 将时间戳分批（每批约1000个）
-2. 每批独立处理：遍历TSV文件提取数据
-3. 处理完一批立即生成Parquet并释放内存
-"""
-
 import os
 import json
-import pickle
 import glob
+import logging
 from datetime import datetime
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Dict, List, Tuple, Set
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
+import threading
 import pytz
 import pandas as pd
-import logging
-import gc
 
-# ==================== 配置 ====================
 CONFIG = {
     "tsv_directory": "/gpfs/group/belle2/group/accelerator/pv/2024/AA_tsv/",
     "abnormal_json": "./aborts_classified.json",
     "normal_json": "./normal_timestamps.json",
     "output_dir": "./dataset",
-    "checkpoint_file": "./dataset/.checkpoint.pkl",
-    "max_workers": 32,
-    "time_before_min": 35,
-    "time_after_min": 5,
+    "checkpoint_file": "./dataset/.checkpoint.txt",
+    "log_file": "./build_dataset.log",
+    "max_workers": 16,
+    "time_before_sec": 30 * 60 + 5,
+    "time_after_sec": 5,
+    "match_before_sec": 60,
     "timezone": "Asia/Tokyo",
-    "batch_size": 1000,  # 每批时间戳数量（可根据内存调整为500-1000）
-    "tsv_cache_file": "./.tsv_list.pkl",
+    "log_every": 200,
 }
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%H:%M:%S')
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[logging.FileHandler(CONFIG["log_file"], encoding="utf-8"), logging.StreamHandler()],
+)
 log = logging.getLogger(__name__)
 
-# ==================== 工具函数 ====================
 
-def process_tsv_for_batch(args: Tuple) -> Tuple[str, Dict]:
-    """处理单个TSV文件，提取批次内所有时间戳的数据"""
-    tsv_path, ranges_info = args
-    # ranges_info: [(ts_ms, start_ms, end_ms), ...]
-    
+def parse_timestamp_ms(ts: str, tz) -> int | None:
+    if not ts:
+        return None
+    ts = ts.strip()
+    if not ts:
+        return None
+    main = ts[:19]
     try:
-        with open(tsv_path, 'r') as f:
-            pv_name = None
-            t0 = None
-            nval = None
-            
-            for _ in range(4):
-                line = f.readline()
-                if '# PV name' in line:
-                    pv_name = line.split()[-1]
-                elif '# t0' in line:
-                    t0 = int(line.split()[2])
-                elif '# Nval' in line:
-                    parts = line.split()
-                    if len(parts) >= 3:
-                        nval = int(parts[2])
-            
-            if nval != 1 or not pv_name or t0 is None:
-                return None, {}
-            
-            # 转换为相对时间戳并过滤，按结束时间排序
-            rel_ranges = []
-            for ts_ms, start_ms, end_ms in ranges_info:
-                rel_s = start_ms - t0
-                rel_e = end_ms - t0
-                if rel_e >= 0:  # 只保留可能有数据的范围
-                    rel_ranges.append((ts_ms, rel_s, rel_e))
-            
-            if not rel_ranges:
-                return pv_name, {}
-            
-            # 按起始时间排序
-            rel_ranges.sort(key=lambda x: x[1])
-            result = defaultdict(list)
-            
-            # 计算全局最小起始和最大结束时间，用于快速跳过
-            global_start = min(r[1] for r in rel_ranges)
-            global_end = max(r[2] for r in rel_ranges)
-            
-            # 流式读取
-            for line in f:
+        dt = datetime.strptime(main, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+    micro = 0
+    if "." in ts:
+        frac = ts.split(".", 1)[1]
+        frac = "".join(ch for ch in frac if ch.isdigit())
+        if frac:
+            micro = int(frac[:6].ljust(6, "0"))
+    dt = dt.replace(microsecond=micro)
+    try:
+        dt = tz.localize(dt)
+    except Exception:
+        try:
+            dt = dt.replace(tzinfo=tz)
+        except Exception:
+            return None
+    return int(dt.timestamp() * 1000)
+
+
+def load_records(json_path: str, tz, default_label: str | None = None) -> list[dict]:
+    if not os.path.exists(json_path):
+        return []
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    out: list[dict] = []
+    for item in data:
+        ts = item.get("timestamp", "")
+        label = default_label if default_label else item.get("critical_trigger", "Unknown")
+        ts_ms = parse_timestamp_ms(ts, tz)
+        if ts_ms is None:
+            continue
+        out.append({"ts_ms": ts_ms, "label": label, "ts_str": ts})
+    return out
+
+
+def sanitize_label(name: str) -> str:
+    if not name:
+        return "Unknown"
+    cleaned = name.strip()
+    for ch in ["\\", "/", "?", "*", ":", '"', "<", ">", "|"]:
+        cleaned = cleaned.replace(ch, "_")
+    cleaned = cleaned.replace(" ", "_")
+    return cleaned if cleaned else "Unknown"
+
+
+def read_last_data_rel_ts(path: str, start_pos: int) -> int | None:
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size <= start_pos:
+                return None
+            read_size = min(8192, size - start_pos)
+            f.seek(-read_size, 2)
+            chunk = f.read(read_size)
+            lines = chunk.splitlines()
+            for line in reversed(lines):
+                if not line or line.startswith(b"#"):
+                    continue
                 parts = line.split()
                 if len(parts) < 2:
                     continue
-                
                 try:
-                    rel_ts = int(parts[0])
-                except:
+                    return int(parts[0])
+                except Exception:
                     continue
-                
-                # 快速跳过全局范围之外的数据
-                if rel_ts < global_start:
-                    continue
-                if rel_ts > global_end:
+    except Exception:
+        return None
+    return None
+
+
+def index_tsv_file(path: str) -> dict | None:
+    try:
+        t0 = None
+        nval = None
+        pv_name = None
+        start_rel = None
+        start_pos = 0
+        with open(path, "rb") as f:
+            for _ in range(20):
+                line = f.readline()
+                if not line:
                     break
-                
                 try:
-                    val = float(parts[1])
-                except:
+                    text = line.decode("utf-8", errors="ignore")
+                except Exception:
+                    text = ""
+                if text.startswith("#"):
+                    if "# t0" in text:
+                        parts = text.split()
+                        if len(parts) >= 3:
+                            try:
+                                t0 = int(parts[2])
+                            except Exception:
+                                pass
+                    if "# Nval" in text:
+                        parts = text.split()
+                        if len(parts) >= 3:
+                            try:
+                                nval = int(parts[2])
+                            except Exception:
+                                pass
+                    if "# PV name" in text:
+                        parts = text.split()
+                        if parts:
+                            pv_name = parts[-1]
                     continue
-                
-                # 检查属于哪些时间范围（一个数据点可能属于多个范围）
-                for ts_ms, rs, re in rel_ranges:
-                    if rel_ts < rs:
-                        break  # 后续范围起始更大，无需继续
-                    if rel_ts <= re:
-                        result[ts_ms].append((t0 + rel_ts, val))
-            
-            return pv_name, dict(result)
-    except:
-        return None, {}
+                start_pos = f.tell() - len(line)
+                parts = text.split()
+                if len(parts) >= 2:
+                    try:
+                        start_rel = int(parts[0])
+                    except Exception:
+                        start_rel = None
+                break
+        if t0 is None or nval != 1 or start_rel is None:
+            return None
+        end_rel = read_last_data_rel_ts(path, start_pos)
+        if end_rel is None:
+            end_rel = start_rel
+        return {
+            "path": path,
+            "t0": t0,
+            "start_rel": start_rel,
+            "end_rel": end_rel,
+            "pv_name": pv_name,
+        }
+    except Exception:
+        return None
 
-def load_records(json_path: str, tz, label: str = None) -> List[Dict]:
-    """加载JSON记录"""
-    if not os.path.exists(json_path):
-        return []
-    
-    with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    out = []
-    for item in data:
-        ts = item.get('timestamp', '')
-        trigger = label or item.get('critical_trigger', 'Unknown')
-        try:
-            dt = datetime.strptime(ts[:19], '%Y-%m-%d %H:%M:%S')
-            dt = tz.localize(dt)
-            out.append({'ts_ms': int(dt.timestamp() * 1000), 'ts_str': ts, 'trigger': trigger})
-        except:
-            continue
-    return out
 
-def scan_tsv(directory: str, cache_file: str = None) -> List[str]:
-    """
-    扫描TSV文件，只返回单维度(Nval=1)的文件
-    支持缓存：首次扫描后保存列表，后续直接加载
-    """
-    # 尝试加载缓存
-    if cache_file and os.path.exists(cache_file):
-        try:
-            with open(cache_file, 'rb') as f:
-                cached = pickle.load(f)
-            log.info(f"从TSV缓存加载: {len(cached)} 个文件")
-            return cached
-        except:
-            log.info("缓存加载失败，重新扫描")
-    
-    # 扫描文件
-    log.info("扫描TSV文件中...")
+def scan_tsv(directory: str, workers: int) -> list[dict]:
     files = glob.glob(os.path.join(directory, "*.tsv"))
-    log.info(f"总文件数: {len(files)}")
-    
-    valid = []
-    for i, fpath in enumerate(files):
-        try:
-            with open(fpath, 'r') as fp:
-                for _ in range(4):
-                    line = fp.readline()
-                    if line.startswith('# Nval'):
-                        parts = line.split()
-                        if len(parts) >= 3 and parts[2] == '1':
-                            valid.append(fpath)
-                        break
-        except:
-            continue
-        
-        # 进度提示
-        if (i + 1) % 5000 == 0:
-            log.info(f"扫描进度: {i+1}/{len(files)}, 有效: {len(valid)}")
-    
-    # 保存缓存
-    if cache_file and valid:
-        try:
-            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-            with open(cache_file, 'wb') as f:
-                pickle.dump(valid, f)
-            log.info(f"TSV列表已缓存: {cache_file}")
-        except Exception as e:
-            log.info(f"缓存保存失败: {e}")
-    
-    return valid
+    if not files:
+        return []
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=workers) as exe:
+        futures = {exe.submit(index_tsv_file, f): f for f in files}
+        for future in as_completed(futures):
+            try:
+                info = future.result()
+            except Exception:
+                info = None
+            if info:
+                results.append(info)
+    return results
 
-def save_parquet(data: Dict, path: str) -> bool:
-    """保存Parquet"""
-    ts_set = set()
-    for pts in data.values():
-        ts_set.update(t for t, _ in pts)
-    
-    if not ts_set:
-        return False
-    
-    ts_list = sorted(ts_set)
-    pvs = sorted(data.keys())
-    
-    df_data = {'timestamp': ts_list}
-    for pv in pvs:
-        m = {t: v for t, v in data.get(pv, [])}
-        df_data[pv] = [m.get(t, 0.0) for t in ts_list]
-    
+
+def load_checkpoint(path: str) -> set[str]:
+    if not os.path.exists(path):
+        return set()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return {line.strip() for line in f if line.strip()}
+    except Exception:
+        return set()
+
+
+def save_checkpoint(path: str, done: set[str]) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    pd.DataFrame(df_data).to_parquet(path, index=False, compression='snappy')
-    return True
+    with open(path, "w", encoding="utf-8") as f:
+        for item in sorted(done):
+            f.write(item + "\n")
 
-def load_checkpoint(path: str) -> Set[str]:
+
+def iter_tsv_data(path: str):
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if not line:
+                continue
+            if line[0] == "#":
+                continue
+            parts = line.strip().split()
+            if len(parts) < 2:
+                continue
+            try:
+                rel_ts = int(parts[0])
+                val = float(parts[1])
+            except Exception:
+                continue
+            yield rel_ts, val
+
+
+def find_matched_events(path: str, t0: int, candidates: list[dict]) -> set[int]:
+    if not candidates:
+        return set()
+    starts = sorted((c["match_start_ms"] - t0, i) for i, c in enumerate(candidates))
+    ends = sorted((c["match_end_ms"] - t0, i) for i, c in enumerate(candidates))
+    min_start = starts[0][0]
+    max_end = ends[-1][0]
+    matched: set[int] = set()
+    active: set[int] = set()
+    start_i = 0
+    end_i = 0
+    for rel_ts, _ in iter_tsv_data(path):
+        if rel_ts < min_start:
+            continue
+        if rel_ts > max_end:
+            break
+        while start_i < len(starts) and starts[start_i][0] <= rel_ts:
+            active.add(starts[start_i][1])
+            start_i += 1
+        while end_i < len(ends) and ends[end_i][0] < rel_ts:
+            idx = ends[end_i][1]
+            if idx in active:
+                active.remove(idx)
+            end_i += 1
+        if active:
+            matched.update(active)
+            active.clear()
+            if len(matched) == len(candidates):
+                break
+    return matched
+
+
+def collect_window_points(path: str, t0: int, candidates: list[dict]) -> dict[str, list[tuple[int, float]]]:
+    label_points: dict[str, list[tuple[int, float]]] = defaultdict(list)
+    if not candidates:
+        return label_points
+    starts = sorted((c["window_start_ms"] - t0, i) for i, c in enumerate(candidates))
+    ends = sorted((c["window_end_ms"] - t0, i) for i, c in enumerate(candidates))
+    min_start = starts[0][0]
+    max_end = ends[-1][0]
+    label_counts: dict[str, int] = defaultdict(int)
+    start_i = 0
+    end_i = 0
+    for rel_ts, val in iter_tsv_data(path):
+        if rel_ts < min_start:
+            continue
+        if rel_ts > max_end:
+            break
+        while start_i < len(starts) and starts[start_i][0] <= rel_ts:
+            idx = starts[start_i][1]
+            label_counts[candidates[idx]["label_dir"]] += 1
+            start_i += 1
+        while end_i < len(ends) and ends[end_i][0] < rel_ts:
+            idx = ends[end_i][1]
+            label = candidates[idx]["label_dir"]
+            if label_counts[label] > 0:
+                label_counts[label] -= 1
+            end_i += 1
+        if label_counts:
+            abs_ts = t0 + rel_ts
+            for label, count in label_counts.items():
+                if count > 0:
+                    label_points[label].append((abs_ts, val))
+    return label_points
+
+
+def write_parquet(points: list[tuple[int, float]], pv_name: str, path: str) -> int:
+    if not points:
+        return 0
+    df_new = pd.DataFrame(points, columns=["epoch_ms", "value"])
+    df_new["pv_name"] = pv_name
     if os.path.exists(path):
         try:
-            with open(path, 'rb') as f:
-                return pickle.load(f)
-        except:
-            pass
-    return set()
+            df_old = pd.read_parquet(path, columns=["epoch_ms", "value", "pv_name"])
+            df = pd.concat([df_old, df_new], ignore_index=True)
+        except Exception:
+            df = df_new
+    else:
+        df = df_new
+    df = df.drop_duplicates(subset=["epoch_ms"], keep="first")
+    df = df.sort_values("epoch_ms")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    df.to_parquet(path, index=False, compression="snappy")
+    return len(df_new)
 
-def save_checkpoint(path: str, done: Set[str]):
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'wb') as f:
-            pickle.dump(done, f)
-    except:
-        pass
 
-# ==================== 主流程 ====================
+def build_events(normal_records: list[dict], abnormal_records: list[dict], cfg: dict) -> list[dict]:
+    events: list[dict] = []
+    before_ms = int(cfg["time_before_sec"]) * 1000
+    after_ms = int(cfg["time_after_sec"]) * 1000
+    match_ms = int(cfg["match_before_sec"]) * 1000
+    for rec in normal_records:
+        ts_ms = rec["ts_ms"]
+        events.append(
+            {
+                "ts_ms": ts_ms,
+                "label_dir": "Normal",
+                "window_start_ms": ts_ms - before_ms,
+                "window_end_ms": ts_ms - after_ms,
+                "match_start_ms": ts_ms - match_ms,
+                "match_end_ms": ts_ms,
+            }
+        )
+    for rec in abnormal_records:
+        ts_ms = rec["ts_ms"]
+        trigger = rec["label"]
+        label_dir = os.path.join("Abnormal", sanitize_label(trigger))
+        events.append(
+            {
+                "ts_ms": ts_ms,
+                "label_dir": label_dir,
+                "window_start_ms": ts_ms - before_ms,
+                "window_end_ms": ts_ms - after_ms,
+                "match_start_ms": ts_ms - match_ms,
+                "match_end_ms": ts_ms,
+            }
+        )
+    return events
 
-def main():
+
+def process_file(file_info: dict, events: list[dict], cfg: dict) -> tuple[str, bool, int, int, int, str]:
+    path = file_info["path"]
+    t0 = file_info["t0"]
+    file_start_abs = t0 + file_info["start_rel"]
+    file_end_abs = t0 + file_info["end_rel"]
+    pv_file = os.path.splitext(os.path.basename(path))[0]
+    pv_name = file_info.get("pv_name") or pv_file
+    candidates = [
+        e
+        for e in events
+        if e["match_start_ms"] <= file_end_abs and e["match_end_ms"] >= file_start_abs
+    ]
+    if not candidates:
+        return path, True, 0, 0, 0, "no_candidates"
+    matched_idx = find_matched_events(path, t0, candidates)
+    if not matched_idx:
+        return path, True, 0, 0, 0, "no_match"
+    matched = [candidates[i] for i in sorted(matched_idx)]
+    label_points = collect_window_points(path, t0, matched)
+    if not label_points:
+        return path, True, 0, 0, 0, "no_points"
+    total_written = 0
+    window_count = 0
+    for label_dir, points in label_points.items():
+        if not points:
+            continue
+        out_dir = os.path.join(cfg["output_dir"], label_dir)
+        out_path = os.path.join(out_dir, f"{pv_file}.parquet")
+        total_written += write_parquet(points, pv_name, out_path)
+        window_count += 1
+    if total_written == 0:
+        return path, True, 0, len(matched), window_count, "empty_write"
+    return path, True, total_written, len(matched), window_count, "ok"
+
+
+def main() -> None:
     cfg = CONFIG
-    tz = pytz.timezone(cfg['timezone'])
-    
-    log.info("=" * 50)
-    log.info("数据集构建工具 - 分批处理版")
-    log.info(f"时间窗口: -{cfg['time_before_min']}min ~ -{cfg['time_after_min']}min")
-    log.info(f"并行进程: {cfg['max_workers']}, 批大小: {cfg['batch_size']}")
-    log.info("=" * 50)
-    
-    # 1. 加载记录
-    log.info("[1] 加载时间戳...")
-    abnormal = load_records(cfg['abnormal_json'], tz)
-    normal = load_records(cfg['normal_json'], tz, 'Normal')
-    all_rec = abnormal + normal
-    log.info(f"异常: {len(abnormal)}, 正常: {len(normal)}")
-    
-    # 2. 检查点
-    done = load_checkpoint(cfg['checkpoint_file'])
-    pending = [r for r in all_rec if r['ts_str'] not in done]
-    log.info(f"已完成: {len(done)}, 待处理: {len(pending)}")
-    
-    if not pending:
-        log.info("全部完成!")
-        return
-    
-    # 3. 扫描TSV（支持缓存）
-    log.info("[2] 扫描TSV文件...")
-    tsv_files = scan_tsv(cfg['tsv_directory'], cfg.get('tsv_cache_file'))
-    log.info(f"有效TSV: {len(tsv_files)}")
-    
+    tz = pytz.timezone(cfg["timezone"])
+    log.info("加载时间戳")
+    abnormal = load_records(cfg["abnormal_json"], tz)
+    normal = load_records(cfg["normal_json"], tz, "Normal")
+    events = build_events(normal, abnormal, cfg)
+    log.info("异常标签: %d 正常标签: %d", len(abnormal), len(normal))
+    log.info("扫描TSV文件")
+    tsv_files = scan_tsv(cfg["tsv_directory"], cfg["max_workers"])
+    log.info("有效TSV: %d", len(tsv_files))
     if not tsv_files:
-        log.error("无TSV文件")
         return
-    
-    # 4. 分批处理
-    time_before_ms = cfg['time_before_min'] * 60 * 1000
-    time_after_ms = cfg['time_after_min'] * 60 * 1000
-    batch_size = cfg['batch_size']
-    total_batches = (len(pending) + batch_size - 1) // batch_size
-    
-    log.info(f"[3] 分批处理: {total_batches} 批")
-    
-    total_success = 0
-    
-    for batch_idx in range(total_batches):
-        start = batch_idx * batch_size
-        end = min(start + batch_size, len(pending))
-        batch = pending[start:end]
-        
-        log.info(f"\n--- 批次 {batch_idx+1}/{total_batches} ({len(batch)}条) ---")
-        
-        # 构建时间范围
-        ranges = []
-        rec_map = {}
-        for r in batch:
-            ts_ms = r['ts_ms']
-            ranges.append((ts_ms, ts_ms - time_before_ms, ts_ms - time_after_ms))
-            rec_map[ts_ms] = r
-        
-        # 并行处理TSV
-        agg = defaultdict(dict)
-        tasks = [(f, ranges) for f in tsv_files]
-        
-        with ProcessPoolExecutor(max_workers=cfg['max_workers']) as exe:
-            futures = {exe.submit(process_tsv_for_batch, t): t[0] for t in tasks}
-            
-            for future in as_completed(futures):
-                try:
-                    pv, ts_data = future.result()
-                    if pv and ts_data:
-                        for ts_ms, pts in ts_data.items():
-                            if pts:
-                                agg[ts_ms][pv] = pts
-                except:
-                    pass
-        
-        # 生成Parquet
-        batch_success = 0
-        for ts_ms, pv_data in agg.items():
-            if ts_ms not in rec_map:
-                continue
-            
-            rec = rec_map[ts_ms]
-            trigger = rec['trigger']
-            ts_name = rec['ts_str'][:19].replace(':', '').replace('-', '').replace(' ', '_')
-            
-            if trigger == 'Normal':
-                out_dir = os.path.join(cfg['output_dir'], 'Normal')
-            else:
-                safe = trigger.replace(':', '_').replace('/', '_').replace(' ', '_')
-                out_dir = os.path.join(cfg['output_dir'], 'Abnormal', safe)
-            
-            out_path = os.path.join(out_dir, f"{ts_name}.parquet")
-            
+    done = load_checkpoint(cfg["checkpoint_file"])
+    pending = [f for f in tsv_files if f["path"] not in done]
+    log.info("待处理TSV: %d", len(pending))
+    if not pending:
+        return
+    os.makedirs(cfg["output_dir"], exist_ok=True)
+    lock = threading.Lock()
+    processed = [0]
+    skipped = [0]
+    skipped_no_candidates = [0]
+    skipped_no_match = [0]
+    skipped_no_points = [0]
+    skipped_empty_write = [0]
+    written_total = [0]
+    matched_total = [0]
+    windows_total = [0]
+    with ThreadPoolExecutor(max_workers=cfg["max_workers"]) as exe:
+        futures = {exe.submit(process_file, f, events, cfg): f["path"] for f in pending}
+        for future in as_completed(futures):
+            path = futures[future]
             try:
-                if save_parquet(pv_data, out_path):
-                    done.add(rec['ts_str'])
-                    batch_success += 1
-            except:
-                pass
-        
-        total_success += batch_success
-        log.info(f"批次完成: {batch_success}/{len(batch)}")
-        
-        # 保存检查点并清理内存
-        save_checkpoint(cfg['checkpoint_file'], done)
-        del agg, tasks, rec_map
-        gc.collect()
-    
-    # 清理
-    try:
-        os.remove(cfg['checkpoint_file'])
-    except:
-        pass
-    
-    log.info("\n" + "=" * 50)
-    log.info(f"全部完成! 成功: {total_success}")
-    log.info("=" * 50)
+                res_path, ok, written, matched, windows, status = future.result()
+            except Exception:
+                res_path, ok, written, matched, windows, status = path, False, 0, 0, 0, "error"
+            with lock:
+                processed[0] += 1
+                if ok:
+                    done.add(res_path)
+                    save_checkpoint(cfg["checkpoint_file"], done)
+                    written_total[0] += written
+                    matched_total[0] += matched
+                    windows_total[0] += windows
+                    if status != "ok":
+                        skipped[0] += 1
+                        if status == "no_candidates":
+                            skipped_no_candidates[0] += 1
+                        elif status == "no_match":
+                            skipped_no_match[0] += 1
+                        elif status == "no_points":
+                            skipped_no_points[0] += 1
+                        elif status == "empty_write":
+                            skipped_empty_write[0] += 1
+                    if status == "ok":
+                        log.info("处理 %s 窗口 %d 写入 %d", os.path.basename(res_path), windows, written)
+                    else:
+                        log.info("跳过 %s 原因 %s", os.path.basename(res_path), status)
+                if processed[0] % cfg["log_every"] == 0 or processed[0] == len(pending):
+                    remaining = len(pending) - processed[0]
+                    log.info(
+                        "进度 %d/%d 剩余 %d 写入 %d 匹配 %d 窗口 %d 跳过 %d",
+                        processed[0],
+                        len(pending),
+                        remaining,
+                        written_total[0],
+                        matched_total[0],
+                        windows_total[0],
+                        skipped[0],
+                    )
+    log.info(
+        "完成 写入 %d 匹配 %d 窗口 %d 跳过 %d (无候选 %d 无匹配 %d 无数据 %d 空写入 %d) 总计 %d",
+        written_total[0],
+        matched_total[0],
+        windows_total[0],
+        skipped[0],
+        skipped_no_candidates[0],
+        skipped_no_match[0],
+        skipped_no_points[0],
+        skipped_empty_write[0],
+        len(tsv_files),
+    )
+
 
 if __name__ == "__main__":
     main()

@@ -20,13 +20,18 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from matplotlib import font_manager, rcParams
+from sklearn.calibration import calibration_curve
 from sklearn.svm import SVC
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
+    brier_score_loss,
     classification_report,
     confusion_matrix,
     f1_score,
+    log_loss,
     precision_score,
+    precision_recall_curve,
     recall_score,
     roc_auc_score,
     roc_curve,
@@ -809,7 +814,234 @@ def find_optimal_threshold(y_true: np.ndarray, y_proba: np.ndarray, strategy: st
     return best_thresh, best_metrics
 
 
-def save_metrics_and_plots(metrics: dict, output_dir: str) -> None:
+def _save_binary_visualizations(
+    y_true: np.ndarray,
+    y_proba: np.ndarray,
+    output_dir: str,
+    model_name_zh: str,
+    model_name_en: str,
+    optimal_threshold: float,
+) -> None:
+    y_true = np.asarray(y_true).astype(int)
+    y_proba = np.asarray(y_proba).astype(float)
+
+    def save_placeholder(base_name: str, title_zh: str, title_en: str) -> None:
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(5, 4))
+            ax.axis("off")
+            ax.text(0.5, 0.5, "不可用" if lang == "zh" else "N/A", ha="center", va="center", fontsize=14)
+            ax.set_title(title_zh if lang == "zh" else title_en)
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"{base_name}_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+
+    def confusion_percent(y_pred: np.ndarray) -> np.ndarray:
+        cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            cm_pct = cm.astype(float) / cm.sum(axis=1, keepdims=True) * 100
+        return np.nan_to_num(cm_pct, nan=0.0, posinf=0.0, neginf=0.0)
+
+    y_pred_opt = (y_proba >= float(optimal_threshold)).astype(int)
+
+    cm_pct = confusion_percent(y_pred_opt)
+    for lang in ("zh", "en"):
+        fig, ax = plt.subplots(figsize=(4.6, 4.2))
+        labels = ["正常", "异常"] if lang == "zh" else ["Normal", "Abnormal"]
+        title = f"{model_name_zh} 混淆矩阵(%)" if lang == "zh" else f"{model_name_en} Confusion Matrix (%)"
+        sns.heatmap(
+            cm_pct,
+            annot=True,
+            fmt=".1f",
+            cmap="Blues",
+            cbar=False,
+            ax=ax,
+            xticklabels=labels,
+            yticklabels=labels,
+            annot_kws={"size": 12},
+        )
+        for t in ax.texts:
+            t.set_text(t.get_text() + "%")
+        ax.set_xlabel("预测类别" if lang == "zh" else "Predicted")
+        ax.set_ylabel("真实类别" if lang == "zh" else "True")
+        ax.set_title(title + (f"\n阈值={optimal_threshold:.2f}" if lang == "zh" else f"\nThreshold={optimal_threshold:.2f}"))
+        plt.tight_layout()
+        fig_path = os.path.join(output_dir, f"confusion_percent_{lang}.png")
+        plt.savefig(fig_path, dpi=150)
+        plt.close(fig)
+
+    try:
+        fpr, tpr, _ = roc_curve(y_true, y_proba)
+        auc_val = roc_auc_score(y_true, y_proba)
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(4.6, 4.2))
+            ax.plot(fpr, tpr, label=f"AUC={auc_val:.4f}")
+            ax.plot([0, 1], [0, 1], "k--", label=("随机" if lang == "zh" else "Random"))
+            ax.set_xlabel("假阳性率" if lang == "zh" else "False Positive Rate")
+            ax.set_ylabel("真阳性率" if lang == "zh" else "True Positive Rate")
+            ax.set_title(("ROC 曲线" if lang == "zh" else "ROC Curve") + f" ({model_name_zh if lang=='zh' else model_name_en})")
+            ax.legend()
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"roc_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("roc", f"ROC 曲线（{model_name_zh}）", f"ROC Curve ({model_name_en})")
+
+    try:
+        prec, rec, _ = precision_recall_curve(y_true, y_proba)
+        ap = average_precision_score(y_true, y_proba)
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(4.6, 4.2))
+            ax.plot(rec, prec, label=f"AP={ap:.4f}")
+            ax.set_xlabel("召回率" if lang == "zh" else "Recall")
+            ax.set_ylabel("精确率" if lang == "zh" else "Precision")
+            ax.set_title(("PR 曲线" if lang == "zh" else "PR Curve") + f" ({model_name_zh if lang=='zh' else model_name_en})")
+            ax.legend()
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"pr_curve_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("pr_curve", f"PR 曲线（{model_name_zh}）", f"PR Curve ({model_name_en})")
+
+    try:
+        prob_true, prob_pred = calibration_curve(y_true, y_proba, n_bins=10, strategy="uniform")
+        brier = brier_score_loss(y_true, y_proba)
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(4.6, 4.2))
+            ax.plot([0, 1], [0, 1], "k--", label=("理想校准" if lang == "zh" else "Perfect"))
+            ax.plot(prob_pred, prob_true, marker="o", label=f"Brier={brier:.4f}")
+            ax.set_xlabel("预测概率" if lang == "zh" else "Predicted Probability")
+            ax.set_ylabel("真实正例比例" if lang == "zh" else "Fraction of Positives")
+            ax.set_title(("校准曲线" if lang == "zh" else "Calibration Curve") + f" ({model_name_zh if lang=='zh' else model_name_en})")
+            ax.legend()
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"calibration_curve_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("calibration_curve", f"校准曲线（{model_name_zh}）", f"Calibration Curve ({model_name_en})")
+
+    for lang in ("zh", "en"):
+        fig, ax = plt.subplots(figsize=(5.6, 4.2))
+        ax.hist(y_proba[y_true == 0], bins=40, alpha=0.6, label=("正常" if lang == "zh" else "Normal"))
+        ax.hist(y_proba[y_true == 1], bins=40, alpha=0.6, label=("异常" if lang == "zh" else "Abnormal"))
+        ax.axvline(float(optimal_threshold), color="k", linestyle="--", linewidth=1)
+        ax.set_xlabel("预测为异常的概率" if lang == "zh" else "Predicted Abnormal Probability")
+        ax.set_ylabel("样本数" if lang == "zh" else "Count")
+        ax.set_title(("预测分数分布" if lang == "zh" else "Prediction Score Distribution") + f" ({model_name_zh if lang=='zh' else model_name_en})")
+        ax.legend()
+        plt.tight_layout()
+        fig_path = os.path.join(output_dir, f"score_distribution_{lang}.png")
+        plt.savefig(fig_path, dpi=150)
+        plt.close(fig)
+
+    thresholds = np.linspace(0.0, 1.0, 201)
+    precision_list = []
+    recall_list = []
+    specificity_list = []
+    f1_list = []
+    accuracy_list = []
+    for thr in thresholds:
+        y_pred = (y_proba >= thr).astype(int)
+        tn = int(np.sum((y_true == 0) & (y_pred == 0)))
+        fp = int(np.sum((y_true == 0) & (y_pred == 1)))
+        fn = int(np.sum((y_true == 1) & (y_pred == 0)))
+        tp = int(np.sum((y_true == 1) & (y_pred == 1)))
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        accuracy = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0.0
+        precision_list.append(precision)
+        recall_list.append(recall)
+        specificity_list.append(specificity)
+        f1_list.append(f1)
+        accuracy_list.append(accuracy)
+
+    for lang in ("zh", "en"):
+        fig, ax = plt.subplots(figsize=(6.2, 4.2))
+        ax.plot(thresholds, accuracy_list, label=("准确率" if lang == "zh" else "Accuracy"))
+        ax.plot(thresholds, precision_list, label=("精确率" if lang == "zh" else "Precision"))
+        ax.plot(thresholds, recall_list, label=("召回率" if lang == "zh" else "Recall"))
+        ax.plot(thresholds, specificity_list, label=("特异度" if lang == "zh" else "Specificity"))
+        ax.plot(thresholds, f1_list, label=("F1" if lang == "zh" else "F1"))
+        ax.axvline(float(optimal_threshold), color="k", linestyle="--", linewidth=1)
+        ax.set_xlabel("阈值" if lang == "zh" else "Threshold")
+        ax.set_ylabel("指标值" if lang == "zh" else "Metric")
+        ax.set_title(("阈值对比曲线" if lang == "zh" else "Metrics vs Threshold") + f" ({model_name_zh if lang=='zh' else model_name_en})")
+        ax.legend(ncol=3, fontsize=9)
+        plt.tight_layout()
+        fig_path = os.path.join(output_dir, f"threshold_curve_{lang}.png")
+        plt.savefig(fig_path, dpi=150)
+        plt.close(fig)
+
+    summary = {}
+    summary["threshold_optimal"] = float(optimal_threshold)
+    summary["accuracy_opt"] = float(accuracy_score(y_true, y_pred_opt))
+    summary["precision_opt"] = float(precision_score(y_true, y_pred_opt, zero_division=0))
+    summary["recall_opt"] = float(recall_score(y_true, y_pred_opt, zero_division=0))
+    summary["f1_opt"] = float(f1_score(y_true, y_pred_opt, zero_division=0))
+    try:
+        summary["roc_auc"] = float(roc_auc_score(y_true, y_proba))
+    except Exception:
+        summary["roc_auc"] = float("nan")
+    try:
+        summary["ap"] = float(average_precision_score(y_true, y_proba))
+    except Exception:
+        summary["ap"] = float("nan")
+    try:
+        summary["logloss"] = float(log_loss(y_true, y_proba, eps=1e-15))
+    except Exception:
+        summary["logloss"] = float("nan")
+    try:
+        summary["brier"] = float(brier_score_loss(y_true, y_proba))
+    except Exception:
+        summary["brier"] = float("nan")
+
+    keys = ["threshold_optimal", "accuracy_opt", "precision_opt", "recall_opt", "f1_opt", "roc_auc", "ap", "logloss", "brier"]
+    for lang in ("zh", "en"):
+        fig, ax = plt.subplots(figsize=(6.2, 2.8))
+        ax.axis("off")
+        rows = []
+        for k in keys:
+            v = summary.get(k, float("nan"))
+            rows.append([k, f"{v:.6f}" if isinstance(v, float) else str(v)])
+        col_labels = ["指标", "数值"] if lang == "zh" else ["Metric", "Value"]
+        table = ax.table(cellText=rows, colLabels=col_labels, cellLoc="left", loc="center")
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+        table.scale(1, 1.3)
+        ax.set_title(("二分类指标汇总" if lang == "zh" else "Binary Metrics Summary") + f" ({model_name_zh if lang=='zh' else model_name_en})")
+        plt.tight_layout()
+        fig_path = os.path.join(output_dir, f"metrics_summary_{lang}.png")
+        plt.savefig(fig_path, dpi=150)
+        plt.close(fig)
+
+    try:
+        ll = float(log_loss(y_true, y_proba, eps=1e-15))
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(6.2, 4.2))
+            ax.plot([1], [ll], marker="o")
+            ax.set_xlabel("迭代轮数" if lang == "zh" else "Iteration")
+            ax.set_ylabel("损失" if lang == "zh" else "Loss")
+            ax.set_title(("损失曲线" if lang == "zh" else "Loss Curve") + f" ({model_name_zh if lang=='zh' else model_name_en})")
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"loss_curve_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("loss_curve", f"损失曲线（{model_name_zh}）", f"Loss Curve ({model_name_en})")
+
+
+def save_metrics_and_plots(
+    metrics: dict,
+    output_dir: str,
+    y_true: np.ndarray | None = None,
+    y_proba: np.ndarray | None = None,
+    optimal_threshold: float | None = None,
+) -> None:
     log_subsection("保存评估报告")
     os.makedirs(output_dir, exist_ok=True)
     setup_chinese_font()
@@ -853,6 +1085,17 @@ def save_metrics_and_plots(metrics: dict, output_dir: str) -> None:
         plt.close(fig)
         logging.info("  ROC曲线: %s", fig_path)
 
+    if y_true is not None and y_proba is not None:
+        thr = 0.5 if optimal_threshold is None else float(optimal_threshold)
+        _save_binary_visualizations(
+            y_true=np.asarray(y_true),
+            y_proba=np.asarray(y_proba),
+            output_dir=output_dir,
+            model_name_zh="SVM",
+            model_name_en="SVM",
+            optimal_threshold=thr,
+        )
+
 
 def save_model(model: SVC, scaler: StandardScaler, feature_names: list[str], output_dir: str, seed: int, sampling_config: dict) -> str:
     log_subsection("保存模型文件")
@@ -895,13 +1138,12 @@ def run_training(data_dir: str, output_dir: str, test_size: float, seed: int,
         X, y, test_size, seed, binary_params, training_config, file_paths
     )
     
-    reports_dir = os.path.join(output_dir, "reports")
-    save_metrics_and_plots(metrics, reports_dir)
-    
-    # 阈值优化
     y_proba = model.predict_proba(X_valid)[:, 1]
     optimal_threshold, opt_metrics = find_optimal_threshold(y_valid.values, y_proba, strategy="f1")
     logging.info("  推荐阈值: %.2f (F1=%.4f)", optimal_threshold, opt_metrics.get("f1", 0))
+
+    reports_dir = os.path.join(output_dir, "reports")
+    save_metrics_and_plots(metrics, reports_dir, y_true=y_valid.values, y_proba=y_proba, optimal_threshold=optimal_threshold)
     
     models_dir = os.path.join(output_dir, "models")
     save_model(model, scaler, feature_names, models_dir, seed, sampling_config)

@@ -2,39 +2,63 @@
   "_说明": "XGBoost二分类模型训练配置",
   
   "seed": 42,
+  "_seed说明": "随机种子（影响数据划分、采样与模型随机性）",
   "test_size": 0.15,
+  "_test_size说明": "验证集占比（train_test_split 的 test_size）",
   "data_dir": "dataset",
+  "_data_dir说明": "数据目录（包含 Normal/Abnormal 子目录）",
   "output_dir": "artifacts/xgboost/binary",
+  "_output_dir说明": "训练产物输出目录（模型、报告、日志等）",
   
   "binary_params": {
     "_说明": "XGBoost二分类参数",
     "objective": "binary:logistic",
+    "_objective说明": "任务目标（二分类逻辑回归输出）",
     "n_estimators": 1000,
+    "_n_estimators说明": "树的数量（迭代轮数）",
     "learning_rate": 0.01,
+    "_learning_rate说明": "学习率（越小越稳但训练更慢）",
     "max_depth": 8,
+    "_max_depth说明": "树最大深度（限制模型复杂度）",
     "min_child_weight": 1,
+    "_min_child_weight说明": "叶子节点最小权重（越大越保守）",
     "subsample": 0.9,
+    "_subsample说明": "行采样比例",
     "colsample_bytree": 0.9,
+    "_colsample_bytree说明": "列采样比例",
     "reg_alpha": 0.01,
+    "_reg_alpha说明": "L1 正则强度",
     "reg_lambda": 0.01,
+    "_reg_lambda说明": "L2 正则强度",
     "tree_method": "hist",
-    "eval_metric": "logloss"
+    "_tree_method说明": "建树算法（hist=直方图加速）",
+    "eval_metric": "logloss",
+    "_eval_metric说明": "评估指标（logloss）"
   },
   
   "training": {
     "_说明": "训练策略配置",
     "balance_strategy": "undersample_1to1",
+    "_balance_strategy说明": "类别平衡策略（例如 1:1 欠采样）",
     "use_feature_interactions": true,
-    "target_dual_accuracy": 0.90
+    "_use_feature_interactions说明": "是否启用特征交互/派生增强（会增加特征维度）",
+    "target_dual_accuracy": 0.90,
+    "_target_dual_accuracy说明": "目标双分类准确率（用于日志/判断，具体由脚本实现）"
   },
   
   "sampling": {
     "_说明": "采样配置",
     "mode": "window",
+    "_mode说明": "采样方式（window=滑动窗口；非 window 通常为整段汇总）",
     "window_sec": 120.0,
+    "_window_sec说明": "窗口长度（秒）",
     "step_sec": 90.0,
+    "_step_sec说明": "滑动步长（秒）",
     "min_points": 10,
+    "_min_points说明": "窗口内最少点数阈值（不足则丢弃该窗口）",
     "max_windows_per_file": 20,
-    "num_workers": 12
+    "_max_windows_per_file说明": "每个文件最多生成的窗口样本数（控制样本量/内存）",
+    "num_workers": 12,
+    "_num_workers说明": "并行线程数（>1 时启用多线程处理文件）"
   }
 }

@@ -2,35 +2,53 @@
   "_说明": "SVM二分类模型训练配置",
   
   "seed": 42,
+  "_seed说明": "随机种子（影响数据划分、采样与模型随机性）",
   "test_size": 0.15,
+  "_test_size说明": "验证集占比（train_test_split 的 test_size）",
   "data_dir": "dataset",
+  "_data_dir说明": "数据目录（包含 Normal/Abnormal 子目录）",
   "output_dir": "artifacts/svm/binary",
+  "_output_dir说明": "训练产物输出目录（模型、报告、日志等）",
   
   "binary_params": {
     "_说明": "SVM二分类参数",
     "kernel": "rbf",
+    "_kernel说明": "核函数类型（rbf/linear/poly/sigmoid）",
     "C": 1.0,
+    "_C说明": "正则惩罚系数（越大越拟合训练集）",
     "gamma": "scale",
+    "_gamma说明": "RBF 核宽度参数（scale/auto 或数值）",
     "probability": true,
-    "max_iter": 10000
+    "_probability说明": "是否输出概率（会增加训练耗时）",
+    "max_iter": 10000,
+    "_max_iter说明": "最大迭代次数（-1 表示不限制）"
   },
   
   "training": {
     "_说明": "训练策略配置",
     "balance_strategy": "undersample_1to1",
+    "_balance_strategy说明": "类别平衡策略（例如 1:1 欠采样）",
     "use_feature_interactions": true,
+    "_use_feature_interactions说明": "是否启用特征交互/派生增强（会增加特征维度）",
     "use_scaling": true,
     "_use_scaling说明": "SVM需要特征缩放",
-    "target_dual_accuracy": 0.90
+    "target_dual_accuracy": 0.90,
+    "_target_dual_accuracy说明": "目标双分类准确率（用于日志/判断，具体由脚本实现）"
   },
   
   "sampling": {
     "_说明": "采样配置",
     "mode": "window",
+    "_mode说明": "采样方式（window=滑动窗口；非 window 通常为整段汇总）",
     "window_sec": 120.0,
+    "_window_sec说明": "窗口长度（秒）",
     "step_sec": 90.0,
+    "_step_sec说明": "滑动步长（秒）",
     "min_points": 10,
+    "_min_points说明": "窗口内最少点数阈值（不足则丢弃该窗口）",
     "max_windows_per_file": 20,
-    "num_workers": 12
+    "_max_windows_per_file说明": "每个文件最多生成的窗口样本数（控制样本量/内存）",
+    "num_workers": 12,
+    "_num_workers说明": "并行线程数（>1 时启用多线程处理文件）"
   }
 }

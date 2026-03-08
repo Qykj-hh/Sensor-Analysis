@@ -2,30 +2,49 @@
   "_说明": "Random Forest多分类模型训练配置",
   
   "seed": 42,
+  "_seed说明": "随机种子（影响数据划分、采样与模型随机性）",
   "test_size": 0.15,
+  "_test_size说明": "验证集占比（train_test_split 的 test_size）",
   "data_dir": "dataset/Abnormal",
+  "_data_dir说明": "数据目录（包含各异常场景子目录）",
   "output_dir": "artifacts/random_forest/multiclass",
+  "_output_dir说明": "训练产物输出目录（模型、报告、日志等）",
   
   "multiclass_params": {
     "_说明": "Random Forest多分类参数",
     "n_estimators": 500,
+    "_n_estimators说明": "森林中树的数量",
     "max_depth": 15,
+    "_max_depth说明": "单棵树最大深度（None 表示不限制）",
     "min_samples_split": 5,
+    "_min_samples_split说明": "内部节点再划分所需最小样本数",
     "min_samples_leaf": 2,
+    "_min_samples_leaf说明": "叶子节点最少样本数（越大越平滑）",
     "max_features": "sqrt",
+    "_max_features说明": "每次分裂考虑的特征数（sqrt 表示 √d）",
     "bootstrap": true,
+    "_bootstrap说明": "是否进行有放回采样（bagging）",
     "oob_score": true,
+    "_oob_score说明": "是否计算袋外（OOB）得分",
     "class_weight": "balanced",
-    "n_jobs": -1
+    "_class_weight说明": "类别权重策略（balanced=按频率自动加权）",
+    "n_jobs": -1,
+    "_n_jobs说明": "并行线程数（-1 表示使用全部 CPU 核）"
   },
   
   "sampling": {
     "_说明": "采样配置",
     "mode": "window",
+    "_mode说明": "采样方式（window=滑动窗口；非 window 通常为整段汇总）",
     "window_sec": 600.0,
+    "_window_sec说明": "窗口长度（秒）",
     "step_sec": 180.0,
+    "_step_sec说明": "滑动步长（秒）",
     "min_points": 15,
+    "_min_points说明": "窗口内最少点数阈值（不足则丢弃该窗口）",
     "max_windows_per_file": 15,
-    "num_workers": 12
+    "_max_windows_per_file说明": "每个文件最多生成的窗口样本数（控制样本量/内存）",
+    "num_workers": 12,
+    "_num_workers说明": "并行线程数（>1 时启用多线程处理文件）"
   }
 }

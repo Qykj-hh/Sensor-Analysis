@@ -5,6 +5,7 @@
 """
 import argparse
 import json
+import hashlib
 import logging
 import os
 import pickle
@@ -29,15 +30,21 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from matplotlib import font_manager, rcParams
+from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
     classification_report,
     confusion_matrix,
+    f1_score,
+    log_loss,
+    precision_recall_curve,
     f1_score,
     precision_score,
     recall_score,
 )
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import label_binarize
 from sklearn.utils.class_weight import compute_sample_weight
 
 SEED = 42
@@ -58,13 +65,16 @@ DEFAULT_MULTICLASS_PARAMS: dict[str, float | int | str] = {
     "class_weight": "balanced",
 }
 
-DEFAULT_SAMPLING_CONFIG: dict[str, float | int | str] = {
+DEFAULT_SAMPLING_CONFIG: dict[str, float | int | str | bool] = {
     "mode": "window",
     "window_sec": 120.0,
     "step_sec": 30.0,
     "min_points": 10,
     "max_windows_per_file": 100,
     "num_workers": 0,
+    "use_pv_hash_bucket": False,
+    "pv_hash_bucket_size": 4096,
+    "pv_hash_salt": "pv_hash_v1",
 }
 
 # 特征类别映射（12类）
@@ -308,6 +318,14 @@ def find_parquet_files(base_dir: str, verbose: bool = False) -> list[tuple[str, 
                 logging.info("    - %s: %d 个文件", sc, cnt)
     
     return results
+
+
+def stable_hash_bucket(text: str, bucket_size: int, salt: str) -> int:
+    raw = f"{salt}|{text}".encode("utf-8", errors="ignore")
+    digest = hashlib.md5(raw).digest()
+    v = int.from_bytes(digest[:8], byteorder="little", signed=False)
+    k = int(bucket_size)
+    return int(v % k) if k > 0 else 0
 
 
 def extract_features_from_series(values: pd.Series, epochs: pd.Series) -> dict:
@@ -895,13 +913,45 @@ def build_feature_table(
     table = pd.DataFrame(records)
     del records
     gc.collect()
-    
+
+    if bool(sampling_config.get("use_pv_hash_bucket", False)) and "pv_name" in table.columns:
+        bucket_size = int(sampling_config.get("pv_hash_bucket_size", 2048))
+        salt = str(sampling_config.get("pv_hash_salt", "pv_hash_v1"))
+        pv_raw = table["pv_name"].fillna("").astype(str)
+        pv_unique = pv_raw.unique()
+        pv_map = {name: stable_hash_bucket(name, bucket_size=bucket_size, salt=salt) for name in pv_unique}
+        table["pv_bucket"] = pv_raw.map(pv_map).astype(np.int32).astype("category")
+        logging.info("  PV Hash Bucket: 开启 | K=%d | 唯一PV=%d", bucket_size, len(pv_unique))
+
+    meta_cols = {"file_path", "pv_name", "window_start_epoch_ms", "window_end_epoch_ms", "label", "scenario"}
+    numeric_cols = table.select_dtypes(include=[np.number]).columns.tolist()
+    base_cols = [c for c in numeric_cols if c not in meta_cols]
+    if base_cols:
+        sort_cols = ["file_path"]
+        group_cols = ["file_path"]
+        if "pv_name" in table.columns:
+            sort_cols = ["file_path", "pv_name"]
+            group_cols = ["file_path", "pv_name"]
+        if "window_start_epoch_ms" in table.columns:
+            sort_cols = sort_cols + ["window_start_epoch_ms"]
+        table = table.sort_values(sort_cols, kind="mergesort")
+        delta_df = table.groupby(group_cols, sort=False)[base_cols].diff().fillna(0.0)
+        delta_df.columns = [f"delta_{c}" for c in base_cols]
+        table = pd.concat([table, delta_df.astype(np.float32)], axis=1)
+
     feature_cols = [
         c for c in table.columns
         if c not in ["file_path", "pv_name", "window_start_epoch_ms", "window_end_epoch_ms", "label", "scenario"]
     ]
-    
-    X = table[feature_cols].astype(np.float32)
+
+    X = table[feature_cols].copy()
+    if "pv_bucket" in X.columns:
+        num_cols = [c for c in X.columns if c != "pv_bucket"]
+        if num_cols:
+            X[num_cols] = X[num_cols].astype(np.float32)
+    else:
+        X = X.astype(np.float32)
+
     y = table["label"].astype(np.int8)
     file_paths = table["file_path"].reset_index(drop=True)
     
@@ -931,6 +981,7 @@ def train_model(
     test_size: float,
     seed: int,
     params: dict,
+    sampling_config: dict,
     file_paths: pd.Series,
 ) -> tuple[lgb.LGBMClassifier, dict, pd.DataFrame, pd.Series, np.ndarray, pd.Series]:
     """训练多分类模型，返回模型、指标、验证集和预测结果"""
@@ -1177,7 +1228,20 @@ def train_model(
             "file_name": file_name
         })
     metrics["top10_influential_files"] = top10_influential
-    
+
+    if bool(sampling_config.get("use_pv_hash_bucket", False)) and "pv_bucket" in X.columns:
+        pv_hash_bundle = {
+            "type": "hash_bucket",
+            "feature": "pv_bucket",
+            "bucket_size": int(sampling_config.get("pv_hash_bucket_size", 2048)),
+            "salt": str(sampling_config.get("pv_hash_salt", "pv_hash_v1")),
+        }
+        metrics["pv_hash"] = pv_hash_bundle
+        try:
+            setattr(model, "pv_hash_", pv_hash_bundle)
+        except Exception:
+            pass
+
     return model, metrics, X_valid, y_valid, y_pred_proba, paths_valid
 
 
@@ -1229,6 +1293,231 @@ def save_metrics_and_plots(metrics: dict, label_mapping: dict[str, int], output_
             logging.info("  混淆矩阵(%s): %s", lang.upper(), fig_path)
 
 
+def save_multiclass_visualizations(
+    model,
+    y_valid: pd.Series,
+    y_pred_proba: np.ndarray,
+    label_mapping: dict[str, int],
+    output_dir: str,
+) -> None:
+    os.makedirs(output_dir, exist_ok=True)
+    setup_chinese_font()
+
+    y_true = y_valid.values.astype(int)
+    y_pred_proba = np.asarray(y_pred_proba, dtype=float)
+    y_pred = np.argmax(y_pred_proba, axis=1).astype(int)
+    labels_sorted = sorted(label_mapping.items(), key=lambda x: x[1])
+    class_names = [name for name, _ in labels_sorted]
+    n_classes = len(class_names)
+
+    def save_placeholder(base_name: str, title_zh: str, title_en: str) -> None:
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(5, 4))
+            ax.axis("off")
+            ax.text(0.5, 0.5, "不可用" if lang == "zh" else "N/A", ha="center", va="center", fontsize=14)
+            ax.set_title(title_zh if lang == "zh" else title_en)
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"{base_name}_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+
+    try:
+        evals_result = getattr(model, "evals_result_", None)
+        metric_series = None
+        metric_name = None
+        if isinstance(evals_result, dict):
+            key0 = "valid_0" if "valid_0" in evals_result else next(iter(evals_result.keys()))
+            metric0 = next(iter(evals_result[key0].keys()))
+            metric_series = np.asarray(evals_result[key0][metric0], dtype=float)
+            metric_name = str(metric0)
+        if metric_series is None or metric_series.size < 2:
+            raise RuntimeError("no loss series")
+        x = np.arange(1, metric_series.size + 1)
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(6.2, 4.2))
+            ax.plot(x, metric_series, label=metric_name)
+            ax.set_xlabel("迭代轮数" if lang == "zh" else "Iteration")
+            ax.set_ylabel("损失" if lang == "zh" else "Loss")
+            ax.set_title("多分类损失曲线 (LightGBM)" if lang == "zh" else "Multiclass Loss Curve (LightGBM)")
+            ax.legend()
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"multiclass_loss_curve_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        try:
+            ll = float(log_loss(y_true, y_pred_proba, labels=list(range(n_classes))))
+            for lang in ("zh", "en"):
+                fig, ax = plt.subplots(figsize=(6.2, 4.2))
+                ax.plot([1], [ll], marker="o")
+                ax.set_xlabel("迭代轮数" if lang == "zh" else "Iteration")
+                ax.set_ylabel("损失" if lang == "zh" else "Loss")
+                ax.set_title("多分类损失 (LightGBM)" if lang == "zh" else "Multiclass Loss (LightGBM)")
+                plt.tight_layout()
+                fig_path = os.path.join(output_dir, f"multiclass_loss_curve_{lang}.png")
+                plt.savefig(fig_path, dpi=150)
+                plt.close(fig)
+        except Exception:
+            save_placeholder("multiclass_loss_curve", "多分类损失曲线 (LightGBM)", "Multiclass Loss Curve (LightGBM)")
+
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(n_classes)))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cm_pct = cm.astype(float) / cm.sum(axis=1, keepdims=True) * 100
+    cm_pct = np.nan_to_num(cm_pct, nan=0.0, posinf=0.0, neginf=0.0)
+    for lang in ("zh", "en"):
+        fig, ax = plt.subplots(figsize=(max(7, len(class_names) * 0.7), max(5.5, len(class_names) * 0.6)))
+        sns.heatmap(
+            cm_pct,
+            annot=True,
+            fmt=".1f",
+            cmap="Blues",
+            cbar=False,
+            ax=ax,
+            xticklabels=class_names,
+            yticklabels=class_names,
+            annot_kws={"size": 9},
+        )
+        for t in ax.texts:
+            t.set_text(t.get_text() + "%")
+        ax.set_xlabel("预测类别" if lang == "zh" else "Predicted")
+        ax.set_ylabel("真实类别" if lang == "zh" else "True")
+        ax.set_title("多分类混淆矩阵(%) (LightGBM)" if lang == "zh" else "Multiclass Confusion Matrix (%) (LightGBM)")
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+        fig_path = os.path.join(output_dir, f"multiclass_confusion_percent_{lang}.png")
+        plt.savefig(fig_path, dpi=150)
+        plt.close(fig)
+
+    try:
+        y_true_bin = label_binarize(y_true, classes=list(range(n_classes)))
+        fpr_micro, tpr_micro, _ = roc_curve(y_true_bin.ravel(), y_pred_proba.ravel())
+        auc_micro = float(np.trapz(tpr_micro, fpr_micro))
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(4.8, 4.2))
+            ax.plot(fpr_micro, tpr_micro, label=f"micro-AUC={auc_micro:.4f}")
+            ax.plot([0, 1], [0, 1], "k--", label=("随机" if lang == "zh" else "Random"))
+            ax.set_xlabel("假阳性率" if lang == "zh" else "False Positive Rate")
+            ax.set_ylabel("真阳性率" if lang == "zh" else "True Positive Rate")
+            ax.set_title("多分类 ROC（micro）" if lang == "zh" else "Multiclass ROC (micro)")
+            ax.legend()
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"multiclass_roc_micro_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("multiclass_roc_micro", "多分类 ROC（micro）", "Multiclass ROC (micro)")
+
+    try:
+        y_true_bin = label_binarize(y_true, classes=list(range(n_classes)))
+        precision_micro, recall_micro, _ = precision_recall_curve(y_true_bin.ravel(), y_pred_proba.ravel())
+        ap_micro = float(average_precision_score(y_true_bin, y_pred_proba, average="micro"))
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(4.8, 4.2))
+            ax.plot(recall_micro, precision_micro, label=f"micro-AP={ap_micro:.4f}")
+            ax.set_xlabel("召回率" if lang == "zh" else "Recall")
+            ax.set_ylabel("精确率" if lang == "zh" else "Precision")
+            ax.set_title("多分类 PR（micro）" if lang == "zh" else "Multiclass PR (micro)")
+            ax.legend()
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"multiclass_pr_micro_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("multiclass_pr_micro", "多分类 PR（micro）", "Multiclass PR (micro)")
+
+    try:
+        max_prob = y_pred_proba.max(axis=1)
+        correct = (y_pred == y_true).astype(int)
+        prob_true, prob_pred = calibration_curve(correct, max_prob, n_bins=10, strategy="uniform")
+        brier = float(np.mean((max_prob - correct) ** 2))
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(4.8, 4.2))
+            ax.plot([0, 1], [0, 1], "k--", label=("理想校准" if lang == "zh" else "Perfect"))
+            ax.plot(prob_pred, prob_true, marker="o", label=f"Brier={brier:.4f}")
+            ax.set_xlabel("置信度(最大预测概率)" if lang == "zh" else "Confidence (max probability)")
+            ax.set_ylabel("正确率" if lang == "zh" else "Accuracy")
+            ax.set_title("置信度校准曲线" if lang == "zh" else "Confidence Calibration Curve")
+            ax.legend()
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"multiclass_confidence_calibration_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("multiclass_confidence_calibration", "置信度校准曲线", "Confidence Calibration Curve")
+
+    try:
+        max_prob = y_pred_proba.max(axis=1)
+        correct = (y_pred == y_true)
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(5.8, 4.2))
+            ax.hist(max_prob[correct], bins=30, alpha=0.7, label=("预测正确" if lang == "zh" else "Correct"))
+            ax.hist(max_prob[~correct], bins=30, alpha=0.7, label=("预测错误" if lang == "zh" else "Wrong"))
+            ax.set_xlabel("置信度(最大预测概率)" if lang == "zh" else "Confidence (max probability)")
+            ax.set_ylabel("样本数" if lang == "zh" else "Count")
+            ax.set_title("预测置信度分布" if lang == "zh" else "Prediction Confidence Distribution")
+            ax.legend()
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"multiclass_confidence_distribution_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("multiclass_confidence_distribution", "预测置信度分布", "Prediction Confidence Distribution")
+
+    try:
+        f1_per_class = f1_score(y_true, y_pred, labels=list(range(n_classes)), average=None, zero_division=0)
+        order = np.argsort(-f1_per_class)
+        names = [class_names[i] for i in order]
+        vals = f1_per_class[order]
+        for lang in ("zh", "en"):
+            fig, ax = plt.subplots(figsize=(max(7.5, len(names) * 0.6), 4.2))
+            ax.bar(range(len(names)), vals)
+            ax.set_xticks(range(len(names)))
+            ax.set_xticklabels(names, rotation=45, ha="right")
+            ax.set_ylabel("F1")
+            ax.set_title("各类别F1" if lang == "zh" else "F1 by Class")
+            plt.tight_layout()
+            fig_path = os.path.join(output_dir, f"multiclass_f1_by_class_{lang}.png")
+            plt.savefig(fig_path, dpi=150)
+            plt.close(fig)
+    except Exception:
+        save_placeholder("multiclass_f1_by_class", "各类别F1", "F1 by Class")
+
+    summary = {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "macro_precision": float(precision_score(y_true, y_pred, average="macro", zero_division=0)),
+        "macro_recall": float(recall_score(y_true, y_pred, average="macro", zero_division=0)),
+        "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+    }
+    try:
+        summary["logloss"] = float(log_loss(y_true, y_pred_proba, labels=list(range(n_classes))))
+    except Exception:
+        summary["logloss"] = float("nan")
+    try:
+        y_true_bin = label_binarize(y_true, classes=list(range(n_classes)))
+        summary["micro_ap"] = float(average_precision_score(y_true_bin, y_pred_proba, average="micro"))
+    except Exception:
+        summary["micro_ap"] = float("nan")
+
+    keys = ["accuracy", "macro_precision", "macro_recall", "macro_f1", "logloss", "micro_ap"]
+    for lang in ("zh", "en"):
+        fig, ax = plt.subplots(figsize=(6.4, 2.9))
+        ax.axis("off")
+        rows = []
+        for k in keys:
+            v = summary.get(k, float("nan"))
+            rows.append([k, f"{v:.6f}" if isinstance(v, float) else str(v)])
+        col_labels = ["指标", "数值"] if lang == "zh" else ["Metric", "Value"]
+        table = ax.table(cellText=rows, colLabels=col_labels, cellLoc="left", loc="center")
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+        table.scale(1, 1.3)
+        ax.set_title("多分类指标汇总" if lang == "zh" else "Multiclass Metrics Summary")
+        plt.tight_layout()
+        fig_path = os.path.join(output_dir, f"multiclass_metrics_summary_{lang}.png")
+        plt.savefig(fig_path, dpi=150)
+        plt.close(fig)
+
+
 def save_model(
     model: lgb.LGBMClassifier,
     feature_names: list[str],
@@ -1241,6 +1530,8 @@ def save_model(
     log_subsection("保存模型文件")
     os.makedirs(output_dir, exist_ok=True)
     
+    pv_hash = getattr(model, "pv_hash_", None)
+
     bundle = {
         "model": model,
         "feature_names": feature_names,
@@ -1249,6 +1540,7 @@ def save_model(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "seed": seed,
         "sampling_config": sampling_config,
+        "pv_hash": pv_hash,
     }
     
     path = os.path.join(output_dir, "multiclass_model.pkl")
@@ -1263,6 +1555,7 @@ def save_model(
             "feature_names": feature_names,
             "label_mapping": label_mapping,
             "created_at": bundle["created_at"],
+            "pv_hash": pv_hash,
         }, f, ensure_ascii=False, indent=2)
     logging.info("  元信息: %s", meta_path)
     
@@ -1292,7 +1585,7 @@ def run_training(
     X, y, feature_names, label_mapping, file_paths = build_feature_table(data_dir, sampling_config)
     
     model, metrics, X_valid, y_valid, y_pred_proba, paths_valid = train_model(
-        X, y, label_mapping, test_size, seed, multiclass_params, file_paths
+        X, y, label_mapping, test_size, seed, multiclass_params, sampling_config, file_paths
     )
     
     reports_dir = os.path.join(output_dir, "reports")
