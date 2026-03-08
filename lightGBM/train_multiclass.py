@@ -39,8 +39,8 @@ from sklearn.metrics import (
     f1_score,
     log_loss,
     precision_recall_curve,
-    f1_score,
     precision_score,
+    precision_recall_fscore_support,
     recall_score,
 )
 from sklearn.model_selection import train_test_split
@@ -213,6 +213,87 @@ def log_subsection(title: str) -> None:
 def log_kv(key: str, value, indent: int = 2) -> None:
     prefix = " " * indent
     logging.info(f"{prefix}{key}: {value}")
+
+
+def format_float(value: float, ndigits: int = 3) -> str:
+    try:
+        if not np.isfinite(value):
+            return "nan"
+    except Exception:
+        return str(value)
+    return f"{value:.{ndigits}f}"
+
+
+def format_percent(value: float, ndigits: int = 2) -> str:
+    try:
+        if not np.isfinite(value):
+            return "nan"
+    except Exception:
+        return str(value)
+    return f"{value * 100:.{ndigits}f}%"
+
+
+def log_multiclass_output_tables(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    target_names: list[str],
+) -> dict:
+    labels = list(range(len(target_names)))
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    total = float(cm.sum())
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cm_global = cm.astype(float) / (total if total > 0 else 1.0)
+        cm_row = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+    cm_global = np.nan_to_num(cm_global, nan=0.0, posinf=0.0, neginf=0.0)
+    cm_row = np.nan_to_num(cm_row, nan=0.0, posinf=0.0, neginf=0.0)
+
+    header = "| 真实标签 \\ 预测标签 | " + " | ".join(target_names) + " |"
+    separator = "| -------------------- | " + " | ".join(["------------"] * len(target_names)) + " |"
+
+    logging.info("")
+    logging.info("  多分类输出")
+    logging.info("  ## 1.混淆矩阵")
+    logging.info("  全局归一化")
+    logging.info("  %s", header)
+    logging.info("  %s", separator)
+    for i, name in enumerate(target_names):
+        row_vals = [format_percent(v) for v in cm_global[i]]
+        logging.info("  | %s | %s |", name, " | ".join(row_vals))
+
+    logging.info("")
+    logging.info("  混淆矩阵2（行归一化）")
+    logging.info("  %s", header)
+    logging.info("  %s", separator)
+    for i, name in enumerate(target_names):
+        row_vals = [format_percent(v) for v in cm_row[i]]
+        logging.info("  | %s | %s |", name, " | ".join(row_vals))
+
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        y_true, y_pred, labels=labels, zero_division=0
+    )
+
+    logging.info("")
+    logging.info("  ## 2.基本指标")
+    logging.info("  | 类别                 | Precision | Recall | F1-Score |")
+    logging.info("  | :------------------- | :-------- | :----- | :------- |")
+    for name, p, r, f in zip(target_names, precision, recall, f1):
+        logging.info("  | %-20s | %s     | %s  | %s    |", name, format_float(p), format_float(r), format_float(f))
+
+    logging.info("")
+    logging.info("  ## 3.多分类各类别漏检率（1-Recall)")
+    logging.info("  | 类别                 | 漏检率 (1-Recall) |")
+    logging.info("  | -------------------- | ----------------- |")
+    for name, r in zip(target_names, recall):
+        miss = 1.0 - float(r)
+        logging.info("  | %-20s | %s             |", name, format_float(miss))
+
+    return {
+        "confusion_matrix_global_norm": cm_global.tolist(),
+        "confusion_matrix_row_norm": cm_row.tolist(),
+        "class_precision": precision.tolist(),
+        "class_recall": recall.tolist(),
+        "class_f1": f1.tolist(),
+    }
 
 
 def set_global_seed(seed: int) -> None:
@@ -1073,6 +1154,13 @@ def train_model(
     logging.info("    - 宏精确率 (Macro-P):    %.4f", metrics["macro_precision"])
     logging.info("    - 宏召回率 (Macro-R):    %.4f", metrics["macro_recall"])
     logging.info("    - 宏 F1 分数 (Macro-F1): %.4f", metrics["macro_f1"])
+
+    extra_tables = log_multiclass_output_tables(
+        y_valid.values.astype(int),
+        y_pred.astype(int),
+        target_names,
+    )
+    metrics.update(extra_tables)
     
     # 输出 Top10 特征重要性
     log_subsection("Top 10 特征重要性")

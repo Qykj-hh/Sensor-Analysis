@@ -161,6 +161,66 @@ def log_kv(key: str, value, indent: int = 2) -> None:
     logging.info(f"{prefix}{key}: {value}")
 
 
+def format_float(value: float, ndigits: int = 4) -> str:
+    try:
+        if not np.isfinite(value):
+            return "nan"
+    except Exception:
+        return str(value)
+    return f"{value:.{ndigits}f}"
+
+
+def log_binary_output_tables(y_true: np.ndarray, y_pred: np.ndarray, auc_value: float) -> dict:
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    total = float(cm.sum())
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cm_global = cm.astype(float) / (total if total > 0 else 1.0)
+        cm_row = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+    cm_global = np.nan_to_num(cm_global, nan=0.0, posinf=0.0, neginf=0.0)
+    cm_row = np.nan_to_num(cm_row, nan=0.0, posinf=0.0, neginf=0.0)
+
+    tp, fn = cm_global[0, 0], cm_global[0, 1]
+    fp, tn = cm_global[1, 0], cm_global[1, 1]
+    r_tp, r_fn = cm_row[0, 0], cm_row[0, 1]
+    r_fp, r_tn = cm_row[1, 0], cm_row[1, 1]
+
+    accuracy = accuracy_score(y_true, y_pred)
+    precision_normal = precision_score(y_true, y_pred, pos_label=0, zero_division=0)
+    recall_normal = recall_score(y_true, y_pred, pos_label=0, zero_division=0)
+    f1_normal = f1_score(y_true, y_pred, pos_label=0, zero_division=0)
+
+    logging.info("")
+    logging.info("  二分类输出")
+    logging.info("  ## 1.混淆矩阵")
+    logging.info("  全局归一化")
+    logging.info("  | 实际类别 \\ 预测类别 | 预测为 Normal（正类） | 预测为 Abnormal（负类） |")
+    logging.info("  | ------------------- | --------------------- | ----------------------- |")
+    logging.info("  | **实际 Normal**     | %s（TP，真阳性）       | %s（FN，假阴性）         |", format_float(tp), format_float(fn))
+    logging.info("  | **实际 Abnormal**   | %s（FP，假阳性）       | %s（TN，真阴性）         |", format_float(fp), format_float(tn))
+    logging.info("")
+    logging.info("  混淆矩阵2（行归一化）")
+    logging.info("  | 实际类别 \\ 预测类别 | 预测为 Normal（正类） | 预测为 Abnormal（负类） |")
+    logging.info("  | ------------------- | --------------------- | ----------------------- |")
+    logging.info("  | **实际 Normal**     | %s（召回率）           | %s（漏检率）             |", format_float(r_tp), format_float(r_fn))
+    logging.info("  | **实际 Abnormal**   | %s（误检率）           | %s（特异度）             |", format_float(r_fp), format_float(r_tn))
+    logging.info("")
+    logging.info("  | 指标                | 数值   |")
+    logging.info("  | :------------------ | :----- |")
+    logging.info("  | Accuracy            | %s |", format_float(accuracy))
+    logging.info("  | Precision（Normal） | %s |", format_float(precision_normal))
+    logging.info("  | Recall（Normal）    | %s |", format_float(recall_normal))
+    logging.info("  | F1-Score（Normal）  | %s |", format_float(f1_normal))
+    logging.info("  | AUC-ROC             | %s |", format_float(auc_value))
+
+    return {
+        "confusion_matrix_global_norm": cm_global.tolist(),
+        "confusion_matrix_row_norm": cm_row.tolist(),
+        "normal_precision": float(precision_normal),
+        "normal_recall": float(recall_normal),
+        "normal_f1": float(f1_normal),
+    }
+
+
 def set_global_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -1499,6 +1559,13 @@ def train_model(
     logging.info("    - 召回率 (Recall):    %.4f", metrics["recall"])
     logging.info("    - F1 分数:            %.4f", metrics["f1"])
     logging.info("    - ROC-AUC:            %.4f", metrics["roc_auc"])
+
+    extra_tables = log_binary_output_tables(
+        y_valid.values.astype(int),
+        y_pred.astype(int),
+        float(metrics["roc_auc"]),
+    )
+    metrics.update(extra_tables)
     
     # ============================================================
     # 全局特征重要性分析
